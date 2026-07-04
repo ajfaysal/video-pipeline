@@ -1,0 +1,15 @@
+# Shared / AspectShift
+opencv-python-headless>=4.9.0
+numpy>=1.26.0
+yt-dlp>=2024.4.9
+tqdm>=4.66.0
+
+# Telegram bot job runner
+requests>=2.31.0
+
+# ClipHarvest (transcription + audio scoring)
+faster-whisper>=1.0.1
+librosa>=0.10.2
+soundfile>=0.12.1
+
+# WatermarkWipe has no additional dependencies beyond the shared set above.

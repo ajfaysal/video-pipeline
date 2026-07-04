@@ -1,0 +1,98 @@
+name: WatermarkWipe
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: "Video URL to clean (leave blank if using a local input path)"
+        required: false
+        default: ""
+      input_path:
+        description: "Local repo-relative path to a video file (leave blank if using video_url)"
+        required: false
+        default: ""
+      mode:
+        description: "Removal mode"
+        required: false
+        default: "inpaint"
+        type: choice
+        options:
+          - inpaint
+          - crop
+      region:
+        description: "Manual region 'x,y,w,h' (leave blank to auto-detect)"
+        required: false
+        default: ""
+      color_grade:
+        description: "Optional color-grade preset"
+        required: false
+        default: "none"
+        type: choice
+        options:
+          - none
+          - cinematic
+          - vibrant
+          - warm
+          - cool
+      background_blur:
+        description: "Apply portrait-mode background blur"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-watermarkwipe-${{ hashFiles('aspectshift/requirements.txt') }}
+
+      - name: Install Python dependencies
+        run: pip install -r aspectshift/requirements.txt
+
+      - name: Run WatermarkWipe
+        run: |
+          ARGS="--mode ${{ github.event.inputs.mode }} --output-dir ./output --quality-check"
+          if [ -n "${{ github.event.inputs.video_url }}" ]; then
+            ARGS="--url \"${{ github.event.inputs.video_url }}\" $ARGS"
+          else
+            ARGS="--input \"${{ github.event.inputs.input_path }}\" $ARGS"
+          fi
+          if [ -n "${{ github.event.inputs.region }}" ]; then
+            ARGS="$ARGS --region ${{ github.event.inputs.region }}"
+          else
+            ARGS="$ARGS --auto-detect"
+          fi
+          if [ "${{ github.event.inputs.color_grade }}" != "none" ]; then
+            ARGS="$ARGS --color-grade ${{ github.event.inputs.color_grade }}"
+          fi
+          if [ "${{ github.event.inputs.background_blur }}" = "true" ]; then
+            ARGS="$ARGS --background-blur"
+          fi
+          eval python watermarkwipe/main.py $ARGS
+
+      - name: Upload output artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: watermarkwipe-output
+          path: output/
+          retention-days: 7

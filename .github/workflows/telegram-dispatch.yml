@@ -1,0 +1,71 @@
+name: Telegram Bot Dispatch
+
+# Triggered remotely by the Cloudflare Worker (cloudflare-worker/worker.js) via
+# the GitHub REST API's "Create a repository dispatch event" endpoint:
+#   POST /repos/{owner}/{repo}/dispatches   { "event_type": "telegram-job", "client_payload": {...} }
+#
+# client_payload fields (all strings):
+#   chat_id, tool, source_type, source_value,
+#   mode, num_clips, min_duration, max_duration, captions,
+#   region, color_grade, background_blur
+on:
+  repository_dispatch:
+    types: [telegram-job]
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340  # stay under the 360-minute GitHub Actions job cap
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-telegram-${{ hashFiles('requirements.txt') }}
+
+      - name: Cache faster-whisper model weights
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: ${{ runner.os }}-whisper-models-v1
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run requested tool and reply on Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ github.event.client_payload.chat_id }}
+          TOOL: ${{ github.event.client_payload.tool }}
+          SOURCE_TYPE: ${{ github.event.client_payload.source_type }}
+          SOURCE_VALUE: ${{ github.event.client_payload.source_value }}
+          MODE: ${{ github.event.client_payload.mode }}
+          NUM_CLIPS: ${{ github.event.client_payload.num_clips }}
+          MIN_DURATION: ${{ github.event.client_payload.min_duration }}
+          MAX_DURATION: ${{ github.event.client_payload.max_duration }}
+          CAPTIONS: ${{ github.event.client_payload.captions }}
+          REGION: ${{ github.event.client_payload.region }}
+          COLOR_GRADE: ${{ github.event.client_payload.color_grade }}
+          BACKGROUND_BLUR: ${{ github.event.client_payload.background_blur }}
+        run: python bot/run_job.py
+
+      - name: Upload job output as a build artifact too (backup if Telegram upload failed)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-job-output-${{ github.event.client_payload.chat_id }}-${{ github.run_id }}
+          path: job_output/
+          retention-days: 3

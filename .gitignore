@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+output/
+clips/
+job_output/
+_transcript_cache/
+.env

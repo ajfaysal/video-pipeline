@@ -1,0 +1,64 @@
+name: AspectShift
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: "Video URL to convert (leave blank if using a local input path)"
+        required: false
+        default: ""
+      input_path:
+        description: "Local repo-relative path to a video file (leave blank if using video_url)"
+        required: false
+        default: ""
+      mode:
+        description: "Conversion mode"
+        required: false
+        default: "blur"
+        type: choice
+        options:
+          - blur
+          - crop
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-aspectshift-${{ hashFiles('aspectshift/requirements.txt') }}
+
+      - name: Install Python dependencies
+        run: pip install -r aspectshift/requirements.txt
+
+      - name: Run AspectShift
+        run: |
+          ARGS="--mode ${{ github.event.inputs.mode }} --output-dir ./output"
+          if [ -n "${{ github.event.inputs.video_url }}" ]; then
+            ARGS="--url \"${{ github.event.inputs.video_url }}\" $ARGS"
+          else
+            ARGS="--input \"${{ github.event.inputs.input_path }}\" $ARGS"
+          fi
+          eval python aspectshift/main.py $ARGS
+
+      - name: Upload output artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aspectshift-output
+          path: output/
+          retention-days: 7

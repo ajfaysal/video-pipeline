@@ -1,0 +1,91 @@
+name: ClipHarvest
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: "Video URL to analyze (leave blank if using a local input path)"
+        required: false
+        default: ""
+      input_path:
+        description: "Local repo-relative path to a video file (leave blank if using video_url)"
+        required: false
+        default: ""
+      num_clips:
+        description: "Number of clips to extract"
+        required: false
+        default: "5"
+      min_duration:
+        description: "Minimum clip duration (seconds)"
+        required: false
+        default: "20"
+      max_duration:
+        description: "Maximum clip duration (seconds)"
+        required: false
+        default: "90"
+      captions:
+        description: "Burn in word-by-word captions"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-clipharvest-${{ hashFiles('requirements.txt') }}
+
+      - name: Cache faster-whisper model weights
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: ${{ runner.os }}-whisper-models-v1
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run ClipHarvest
+        run: |
+          CAPTION_FLAG=""
+          if [ "${{ github.event.inputs.captions }}" = "true" ]; then
+            CAPTION_FLAG="--captions"
+          fi
+          ARGS="--num-clips ${{ github.event.inputs.num_clips }} --min-duration ${{ github.event.inputs.min_duration }} --max-duration ${{ github.event.inputs.max_duration }} $CAPTION_FLAG --output-dir ./clips"
+          if [ -n "${{ github.event.inputs.video_url }}" ]; then
+            ARGS="--url \"${{ github.event.inputs.video_url }}\" $ARGS"
+          else
+            ARGS="--input \"${{ github.event.inputs.input_path }}\" $ARGS"
+          fi
+          eval python clipharvest/main.py $ARGS
+
+      - name: Upload clips + report
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipharvest-output
+          path: |
+            clips/*.mp4
+            clips/*.jpg
+            clips/*.png
+            clips/report.json
+            clips/report.md
+          retention-days: 7
