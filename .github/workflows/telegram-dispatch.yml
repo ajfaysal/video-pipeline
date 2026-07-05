@@ -6,8 +6,7 @@ name: Telegram Bot Dispatch
 #
 # client_payload fields (all strings):
 #   chat_id, tool, source_type, source_value,
-#   mode, num_clips, min_duration, max_duration, captions,
-#   region, color_grade, background_blur
+#   options: { mode, num_clips, min_duration, max_duration, captions, region, color_grade, background_blur }
 on:
   repository_dispatch:
     types: [telegram-job]
@@ -52,14 +51,14 @@ jobs:
           TOOL: ${{ github.event.client_payload.tool }}
           SOURCE_TYPE: ${{ github.event.client_payload.source_type }}
           SOURCE_VALUE: ${{ github.event.client_payload.source_value }}
-          MODE: ${{ github.event.client_payload.mode }}
-          NUM_CLIPS: ${{ github.event.client_payload.num_clips }}
-          MIN_DURATION: ${{ github.event.client_payload.min_duration }}
-          MAX_DURATION: ${{ github.event.client_payload.max_duration }}
-          CAPTIONS: ${{ github.event.client_payload.captions }}
-          REGION: ${{ github.event.client_payload.region }}
-          COLOR_GRADE: ${{ github.event.client_payload.color_grade }}
-          BACKGROUND_BLUR: ${{ github.event.client_payload.background_blur }}
+          MODE: ${{ github.event.client_payload.options.mode }}
+          NUM_CLIPS: ${{ github.event.client_payload.options.num_clips }}
+          MIN_DURATION: ${{ github.event.client_payload.options.min_duration }}
+          MAX_DURATION: ${{ github.event.client_payload.options.max_duration }}
+          CAPTIONS: ${{ github.event.client_payload.options.captions }}
+          REGION: ${{ github.event.client_payload.options.region }}
+          COLOR_GRADE: ${{ github.event.client_payload.options.color_grade }}
+          BACKGROUND_BLUR: ${{ github.event.client_payload.options.background_blur }}
         run: python bot/run_job.py
 
       - name: Upload job output as a build artifact too (backup if Telegram upload failed)

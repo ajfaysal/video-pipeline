@@ -69,6 +69,7 @@ async function clearState(env, chatId) {
 async function dispatchJob(env, payload) {
   const [owner, repo] = env.GITHUB_REPO.split("/");
   const url = `https://api.github.com/repos/${owner}/${repo}/dispatches`;
+  console.error("GITHUB_TOKEN length:", env.GITHUB_TOKEN.length, "last4:", env.GITHUB_TOKEN.slice(-4));
   const resp = await fetch(url, {
     method: "POST",
     headers: {
@@ -79,6 +80,11 @@ async function dispatchJob(env, payload) {
     },
     body: JSON.stringify({ event_type: "telegram-job", client_payload: payload }),
   });
+  if (!resp.ok) {
+    const body = await resp.text();
+    console.error(`GitHub dispatch failed with status ${resp.status} ${resp.statusText}`);
+    console.error(`GitHub dispatch response body: ${body || "<empty>"}`);
+  }
   return resp.ok;
 }
 
@@ -231,14 +237,16 @@ async function dispatchAndFinish(env, chatId, state) {
     tool: state.tool,
     source_type: state.source_type,
     source_value: state.source_value,
-    mode: state.mode || "",
-    num_clips: state.num_clips || "",
-    min_duration: state.min_duration || "",
-    max_duration: state.max_duration || "",
-    captions: state.captions || "",
-    region: "",
-    color_grade: state.color_grade || "",
-    background_blur: state.background_blur || "false",
+    options: {
+      mode: state.mode || "",
+      num_clips: state.num_clips || "",
+      min_duration: state.min_duration || "",
+      max_duration: state.max_duration || "",
+      captions: state.captions || "",
+      region: "",
+      color_grade: state.color_grade || "",
+      background_blur: state.background_blur || "false",
+    },
   });
 
   await clearState(env, chatId);
