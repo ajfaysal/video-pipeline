@@ -18,6 +18,15 @@ Expected environment variables:
     MAX_DURATION   - clipharvest only, default "90"
     CAPTIONS       - clipharvest only, "true"|"false"
     REGION         - watermarkwipe only, manual "x,y,w,h" (omit for --auto-detect)
+    INTRO_TEXT     - introoutro only, intro text string
+    OUTRO_TEXT     - introoutro only, outro text string
+    INTRO_DURATION - introoutro only, intro duration in seconds
+    OUTRO_DURATION - introoutro only, outro duration in seconds
+    BROLL_SOURCES_JSON - abroll only, JSON array of B-roll source URLs/paths
+    STITCH_CLIPS_JSON  - stitcher only, JSON array of clip URLs/paths
+    TRANSITION     - stitcher only, transition type
+    TRANSITION_DURATION - stitcher only, xfade duration in seconds
+    VOICEOVER_SOURCE - audioduck only, audio URL/path for narration
 """
 
 from __future__ import annotations
@@ -26,6 +35,7 @@ import os
 import subprocess
 import sys
 import traceback
+import json
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
@@ -46,6 +56,12 @@ def _run(cmd: list[str]) -> None:
     result = subprocess.run(cmd)
     if result.returncode != 0:
         raise RuntimeError(f"Command failed with exit code {result.returncode}: {' '.join(cmd)}")
+
+
+def _send_output_videos(chat_id: str, output_dir: str, caption_prefix: str) -> None:
+    video_files = [f for f in sorted(os.listdir(output_dir)) if f.endswith(".mp4")]
+    for f in video_files:
+        send_video(chat_id, os.path.join(output_dir, f), caption=f"✅ {caption_prefix} done: {f}")
 
 
 def run_aspectshift(chat_id: str) -> None:
@@ -132,10 +148,83 @@ def run_watermarkwipe(chat_id: str) -> None:
         send_video(chat_id, os.path.join(output_dir, final_file), caption=f"✅ WatermarkWipe ({mode}) done: {final_file}")
 
 
+def run_introoutro(chat_id: str) -> None:
+    source_type = _env("SOURCE_TYPE", required=True)
+    source_value = _env("SOURCE_VALUE", required=True)
+    intro_text = _env("INTRO_TEXT", "Your Channel Name")
+    outro_text = _env("OUTRO_TEXT", "Subscribe for more")
+    intro_duration = _env("INTRO_DURATION", "3.5")
+    outro_duration = _env("OUTRO_DURATION", "3.5")
+    output_dir = "./job_output"
+
+    cmd = [sys.executable, "introoutro/main.py", "--output-dir", output_dir,
+           "--intro-text", intro_text, "--outro-text", outro_text,
+           "--intro-duration", intro_duration, "--outro-duration", outro_duration]
+    cmd += ["--url", source_value] if source_type == "url" else ["--input", source_value]
+    _run(cmd)
+
+    _send_output_videos(chat_id, output_dir, "IntroOutro")
+
+
+def run_abroll(chat_id: str) -> None:
+    source_type = _env("SOURCE_TYPE", required=True)
+    source_value = _env("SOURCE_VALUE", required=True)
+    broll_sources = json.loads(_env("BROLL_SOURCES_JSON", "[]") or "[]")
+    output_dir = "./job_output"
+
+    if not broll_sources:
+        raise RuntimeError("ABRoll requires at least one B-roll source.")
+
+    cmd = [sys.executable, "abroll/main.py", "--output-dir", output_dir]
+    cmd += ["--main", source_value] if source_type == "path" else ["--main", source_value]
+    cmd += ["--broll", *broll_sources]
+    _run(cmd)
+
+    _send_output_videos(chat_id, output_dir, "ABRoll")
+
+
+def run_stitcher(chat_id: str) -> None:
+    source_value = _env("SOURCE_VALUE", required=True)
+    stitch_clips = json.loads(_env("STITCH_CLIPS_JSON", "[]") or "[]")
+    transition = _env("TRANSITION", "crossfade")
+    transition_duration = _env("TRANSITION_DURATION", "0.8")
+    output_dir = "./job_output"
+
+    clips = stitch_clips or [source_value]
+    if source_value and source_value not in clips:
+        clips = [source_value, *clips]
+    if len(clips) < 2:
+        raise RuntimeError("Stitcher requires at least two clips.")
+
+    cmd = [sys.executable, "stitcher/main.py", "--output-dir", output_dir, "--transition", transition,
+           "--transition-duration", transition_duration, "--clips", *clips]
+    _run(cmd)
+
+    _send_output_videos(chat_id, output_dir, "Stitcher")
+
+
+def run_audioduck(chat_id: str) -> None:
+    source_type = _env("SOURCE_TYPE", required=True)
+    source_value = _env("SOURCE_VALUE", required=True)
+    voiceover_source = _env("VOICEOVER_SOURCE", required=True)
+    output_dir = "./job_output"
+
+    cmd = [sys.executable, "audioduck/main.py", "--output-dir", output_dir]
+    cmd += ["--video-url", source_value] if source_type == "url" else ["--video", source_value]
+    cmd += ["--voiceover-url", voiceover_source] if voiceover_source.startswith(("http://", "https://")) else ["--voiceover", voiceover_source]
+    _run(cmd)
+
+    _send_output_videos(chat_id, output_dir, "AudioDuck")
+
+
 TOOL_RUNNERS = {
     "aspectshift": run_aspectshift,
     "clipharvest": run_clipharvest,
     "watermarkwipe": run_watermarkwipe,
+    "introoutro": run_introoutro,
+    "abroll": run_abroll,
+    "stitcher": run_stitcher,
+    "audioduck": run_audioduck,
 }
 
 

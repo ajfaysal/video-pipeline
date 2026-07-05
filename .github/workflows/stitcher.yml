@@ -1,0 +1,78 @@
+name: Stitcher
+
+on:
+  workflow_dispatch:
+    inputs:
+      clips:
+        description: "Space-separated repo-relative paths or URLs for clips to stitch"
+        required: true
+      transition:
+        description: "Transition type"
+        required: false
+        default: "crossfade"
+        type: choice
+        options:
+          - crossfade
+          - wipe-left
+          - wipe-right
+          - cut
+      transition_duration:
+        description: "xfade duration in seconds"
+        required: false
+        default: "0.8"
+
+jobs:
+  stitch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-stitcher-${{ hashFiles('requirements.txt') }}
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Stitcher
+        env:
+          CLIPS: ${{ github.event.inputs.clips }}
+          TRANSITION: ${{ github.event.inputs.transition }}
+          TRANSITION_DURATION: ${{ github.event.inputs.transition_duration }}
+        run: |
+          python - <<'PY'
+          import os
+          import shlex
+          import subprocess
+          import sys
+
+          clips = shlex.split(os.environ["CLIPS"])
+          args = [
+              sys.executable, "stitcher/main.py",
+              "--clips", *clips,
+              "--transition", os.environ["TRANSITION"],
+              "--transition-duration", os.environ["TRANSITION_DURATION"],
+              "--output-dir", "./output",
+          ]
+          raise SystemExit(subprocess.call(args))
+          PY
+
+      - name: Upload output artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: stitcher-output
+          path: output/
+          retention-days: 7

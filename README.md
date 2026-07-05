@@ -6,6 +6,10 @@ with zero VPS required (Cloudflare Workers + GitHub Actions).
 - **AspectShift** - 16:9 → 9:16 conversion, zero visible quality loss
 - **ClipHarvest** - auto-extracts the best short-clip-worthy segments from a long video
 - **WatermarkWipe** - removes watermarks/logos, plus optional color grading and background blur
+- **ABRoll** - auto-detects cut points and inserts B-roll with ffmpeg crossfades
+- **IntroOutro** - adds a branded intro and outro card with ffmpeg drawtext fades
+- **Stitcher** - joins multiple clips with crossfade, wipe, or cut transitions
+- **AudioDuck** - ducks background music under a voiceover track
 
 ## Requirements
 
@@ -66,6 +70,7 @@ python watermarkwipe/main.py --input video.mp4 --mode inpaint --auto-detect --co
   before committing to processing the full video.
 - `--color-grade {cinematic,vibrant,warm,cool}` and `--background-blur` are optional professional
   post-processing steps applied after watermark removal.
+- `--color-grade` also supports `teal_orange`, `vintage_film`, `black_white`, and `high_contrast_news`.
 
 **Known limitation:** inpaint-mode quality depends on background complexity. It works best on
 simple/static backgrounds (sky, walls, solid colors) and may show slight softness on complex/detailed
@@ -74,13 +79,61 @@ inpainting-based reconstruction, not a bug. Always run `--quality-check` first o
 complex watermark region, and prefer `--mode crop` when the watermark sits in a sacrificeable
 corner/edge strip.
 
+## 4. ABRoll
+
+```bash
+python abroll/main.py --main video.mp4 --broll broll1.mp4 broll2.mp4 --output-dir ./output
+```
+
+- Detects silence gaps with `ffmpeg silencedetect` and scene changes with `ffmpeg` scene analysis.
+- Interleaves short B-roll inserts around the selected cut points and joins them with crossfades.
+- Encodes `libx264 -crf 16 -preset slow`.
+
+**Known limitation:** cut detection is heuristic. Very dense dialogue, fast-cut montages, or noisy audio can produce too few or too many candidate points, so you may need to tweak `--scene-threshold`, `--silence-db`, `--silence-min-duration`, or `--max-inserts` for a specific source.
+
+## 5. IntroOutro
+
+```bash
+python introoutro/main.py --input video.mp4 --intro-text "Channel Name" --outro-text "Subscribe for more" --output-dir ./output
+```
+
+- Builds branded intro/outro cards with `ffmpeg drawtext`, a dark background, and fade-in/out.
+- Normalizes the main video to the same resolution/fps so the intro, body, and outro can be concatenated cleanly.
+- Encodes `libx264 -crf 16 -preset slow`.
+
+**Known limitation:** the intro and outro are rendered as standalone cards, so any text longer than the frame allows will wrap or become cramped. Keep the copy short for best results.
+
+## 6. Stitcher
+
+```bash
+python stitcher/main.py --clips clip1.mp4 clip2.mp4 clip3.mp4 --transition crossfade --output-dir ./output
+python stitcher/main.py --clips clip1.mp4 clip2.mp4 --transition wipe-left --output-dir ./output
+```
+
+- Joins clips with ffmpeg `xfade` transitions: `crossfade`, `wipe-left`, `wipe-right`, or `cut`.
+- Normalizes the clips to the first clip's resolution and frame rate so transition chains stay stable.
+- Encodes `libx264 -crf 16 -preset slow`.
+
+**Known limitation:** transition chains need clips with enough duration to overlap cleanly. Extremely short clips can force the effective transition shorter than requested, and `cut` is the only option that does not use an overlap.
+
+## 7. AudioDuck
+
+```bash
+python audioduck/main.py --video video.mp4 --voiceover narration.mp3 --output-dir ./output
+```
+
+- Uses ffmpeg `sidechaincompress` to duck the music whenever the voiceover is active, then mixes the narration back in.
+- Preserves the original video stream and re-encodes the output with `libx264 -crf 16 -preset slow`.
+- Accepts either local files or URLs for the video and voiceover inputs.
+
+**Known limitation:** this is automatic level control, not full dialogue replacement. If the original background music is extremely loud or the narration has poor recording quality, you may still need to normalize the source audio before ducking.
+
 ---
 
 ## Running via GitHub Actions (no local setup needed)
 
 Each tool has a `workflow_dispatch`-triggered workflow under `.github/workflows/`:
-`aspectshift.yml`, `clipharvest.yml`, `watermarkwipe.yml`. Trigger them from the Actions tab with
-a video URL or repo-relative path, and download the result from the run's Artifacts.
+`aspectshift.yml`, `clipharvest.yml`, `watermarkwipe.yml`, `abroll.yml`, `introoutro.yml`, `stitcher.yml`, `audioduck.yml`. Trigger them from the Actions tab with the requested repo-relative path(s) or URL(s), and download the result from the run's Artifacts.
 
 ---
 
@@ -90,6 +143,9 @@ Architecture: **Cloudflare Worker** (receives Telegram messages, collects your t
 via inline buttons) → triggers **GitHub Actions** (`telegram-dispatch.yml`, does the actual
 ffmpeg/whisper work) → Actions sends the finished video/thumbnail straight back to your chat.
 Nothing needs to run 24/7 on a server you manage.
+
+The Worker now exposes the new ABRoll, IntroOutro, Stitcher, and AudioDuck tools as bot options;
+ABRoll/Stitcher will ask for additional clips, and AudioDuck will ask for the narration track before dispatching.
 
 ### Setup
 
@@ -134,8 +190,12 @@ Nothing needs to run 24/7 on a server you manage.
 aspectshift/       downloader.py, converter.py, thumbnail.py, enhance.py, main.py
 clipharvest/        transcriber.py, scorer.py, clipper.py, captioner.py, config.py, main.py
 watermarkwipe/      watermark_detector.py, watermark_remover.py, main.py
+abroll/             main.py
+introoutro/         main.py
+stitcher/           main.py
+audioduck/          main.py
 bot/                telegram_notify.py, run_job.py   (used by telegram-dispatch.yml)
 cloudflare-worker/  worker.js, wrangler.toml
-.github/workflows/  aspectshift.yml, clipharvest.yml, watermarkwipe.yml, telegram-dispatch.yml
+.github/workflows/  aspectshift.yml, clipharvest.yml, watermarkwipe.yml, abroll.yml, introoutro.yml, stitcher.yml, audioduck.yml, telegram-dispatch.yml
 requirements.txt    combined dependencies for all tools + the bot job runner
 ```

@@ -59,6 +59,15 @@ jobs:
           REGION: ${{ github.event.client_payload.options.region }}
           COLOR_GRADE: ${{ github.event.client_payload.options.color_grade }}
           BACKGROUND_BLUR: ${{ github.event.client_payload.options.background_blur }}
+          INTRO_TEXT: ${{ github.event.client_payload.options.intro_text }}
+          OUTRO_TEXT: ${{ github.event.client_payload.options.outro_text }}
+          INTRO_DURATION: ${{ github.event.client_payload.options.intro_duration }}
+          OUTRO_DURATION: ${{ github.event.client_payload.options.outro_duration }}
+          BROLL_SOURCES_JSON: ${{ github.event.client_payload.options.broll_sources_json }}
+          STITCH_CLIPS_JSON: ${{ github.event.client_payload.options.stitch_clips_json }}
+          TRANSITION: ${{ github.event.client_payload.options.transition }}
+          TRANSITION_DURATION: ${{ github.event.client_payload.options.transition_duration }}
+          VOICEOVER_SOURCE: ${{ github.event.client_payload.options.voiceover_source }}
         run: python bot/run_job.py
 
       - name: Upload job output as a build artifact too (backup if Telegram upload failed)

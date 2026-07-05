@@ -4,8 +4,9 @@ enhance.py
 Optional "professional editor" post-processing steps, usable by any tool
 in this repo (currently wired into WatermarkWipe's output):
 
-  color_grade()      - fast ffmpeg-only color grading presets (cinematic
-                        teal-orange, vibrant, warm, cool).
+    color_grade()      - fast ffmpeg-only color grading presets (cinematic,
+                                                teal-orange, vintage film, black & white, high
+                                                contrast news, vibrant, warm, cool).
   background_blur()  - portrait-mode style blur: detects the main subject
                         (largest/most consistent face across the clip),
                         tracks a smoothed foreground region frame-by-frame,
@@ -32,6 +33,27 @@ COLOR_GRADE_PRESETS = {
     "cinematic": (
         "curves=r='0/0 0.5/0.48 1/0.95':b='0/0.05 0.5/0.5 1/0.9',"
         "eq=contrast=1.08:saturation=0.92:gamma=0.98"
+    ),
+    "teal_orange": (
+        "curves=r='0/0 0.22/0.18 0.55/0.58 1/1':"
+        "g='0/0 0.18/0.19 0.65/0.68 1/1':"
+        "b='0/0.05 0.25/0.34 0.7/0.72 1/0.98',"
+        "eq=contrast=1.12:saturation=1.08:brightness=0.01"
+    ),
+    "vintage_film": (
+        "curves=r='0/0.04 0.28/0.26 0.62/0.63 1/0.97':"
+        "g='0/0.02 0.3/0.29 0.68/0.71 1/0.96':"
+        "b='0/0 0.3/0.24 0.7/0.64 1/0.88',"
+        "eq=contrast=0.96:saturation=0.78:brightness=0.03:gamma=1.05"
+    ),
+    "black_white": (
+        "hue=s=0,"
+        "curves=all='0/0 0.18/0.12 0.52/0.55 0.82/0.87 1/1',"
+        "eq=contrast=1.15:brightness=0.02:saturation=0"
+    ),
+    "high_contrast_news": (
+        "curves=all='0/0 0.12/0.08 0.5/0.55 0.85/0.94 1/1',"
+        "eq=contrast=1.32:brightness=0.02:saturation=0.88:gamma=0.98"
     ),
     "vibrant": "eq=contrast=1.05:saturation=1.35:brightness=0.02",
     "warm": "colorbalance=rs=0.08:gs=0.02:bs=-0.08:rm=0.06:bm=-0.06,eq=saturation=1.1",

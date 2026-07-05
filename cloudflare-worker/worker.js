@@ -92,6 +92,10 @@ const TOOL_LABELS = {
   aspectshift: "🔳 AspectShift (16:9 → 9:16)",
   clipharvest: "✂️ ClipHarvest (extract best clips)",
   watermarkwipe: "🧽 WatermarkWipe (remove watermark)",
+  introoutro: "🎬 IntroOutro (brand intro + outro)",
+  abroll: "🧩 ABRoll (auto B-roll inserts)",
+  stitcher: "🧵 Stitcher (join multiple clips)",
+  audioduck: "🎙️ AudioDuck (duck music under voiceover)",
 };
 
 function looksLikeUrl(text) {
@@ -104,39 +108,101 @@ async function handleIncomingSource(env, chatId, sourceType, sourceValue) {
     [{ text: TOOL_LABELS.aspectshift, data: "tool:aspectshift" }],
     [{ text: TOOL_LABELS.clipharvest, data: "tool:clipharvest" }],
     [{ text: TOOL_LABELS.watermarkwipe, data: "tool:watermarkwipe" }],
+    [{ text: TOOL_LABELS.introoutro, data: "tool:introoutro" }],
+    [{ text: TOOL_LABELS.abroll, data: "tool:abroll" }],
+    [{ text: TOOL_LABELS.stitcher, data: "tool:stitcher" }],
+    [{ text: TOOL_LABELS.audioduck, data: "tool:audioduck" }],
   ]));
+}
+
+async function directUrlFromMessage(env, message) {
+  const text = (message.text || "").trim();
+  if (looksLikeUrl(text)) {
+    return text;
+  }
+
+  const file = message.video || message.document || message.audio;
+  if (!file) return null;
+
+  if (file.file_size && file.file_size > 20 * 1024 * 1024) {
+    throw new Error("That file is over Telegram's 20MB bot-download limit.");
+  }
+
+  const fileResp = await tg(env, "getFile", { file_id: file.file_id });
+  const fileData = await fileResp.json();
+  if (!fileData.ok) {
+    throw new Error("Couldn't read that file from Telegram.");
+  }
+
+  return `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${fileData.result.file_path}`;
 }
 
 async function handleMessage(env, message) {
   const chatId = message.chat.id;
   const text = (message.text || "").trim();
+  const state = await getState(env, chatId);
+
+  if (state && ["collect_brolls", "collect_stitch_clips", "collect_voiceover"].includes(state.step)) {
+    if (text === "/done") {
+      if (state.step === "collect_brolls" && (!state.extra_sources || state.extra_sources.length < 1)) {
+        await sendMessage(env, chatId, "Send at least one B-roll clip before /done.");
+        return;
+      }
+      if (state.step === "collect_stitch_clips" && (!state.extra_sources || state.extra_sources.length < 1)) {
+        await sendMessage(env, chatId, "Send at least one additional clip before /done so there are at least two clips total.");
+        return;
+      }
+      await dispatchAndFinish(env, chatId, state);
+      return;
+    }
+
+    try {
+      const directUrl = await directUrlFromMessage(env, message);
+      if (!directUrl) {
+        await sendMessage(env, chatId, "Send a video/audio file or a direct URL, or /done when you're finished.");
+        return;
+      }
+
+      state.extra_sources = state.extra_sources || [];
+      state.extra_sources.push(directUrl);
+
+      if (state.step === "collect_voiceover") {
+        state.voiceover_source = directUrl;
+        await dispatchAndFinish(env, chatId, state);
+        return;
+      }
+
+      await setState(env, chatId, state);
+      await sendMessage(env, chatId, `Added ${state.extra_sources.length} item(s). Send more or /done.`);
+      return;
+    } catch (e) {
+      await sendMessage(env, chatId, `❌ ${e.message}`);
+      return;
+    }
+  }
 
   if (text === "/start" || text === "/help") {
     await sendMessage(env, chatId,
       "👋 Send me a video link (YouTube etc.) to process, then pick a tool:\n\n" +
       "🔳 AspectShift - convert 16:9 to 9:16\n" +
       "✂️ ClipHarvest - auto-extract the best short clips\n" +
-      "🧽 WatermarkWipe - remove a watermark/logo\n\n" +
+      "🧽 WatermarkWipe - remove a watermark/logo\n" +
+      "🎬 IntroOutro - add a branded intro and outro\n" +
+      "🧩 ABRoll - add auto-detected B-roll inserts\n" +
+      "🧵 Stitcher - join multiple clips with transitions\n" +
+      "🎙️ AudioDuck - duck music under a narration track\n\n" +
       "Note: for a directly-uploaded video file, Telegram only lets bots fetch files up to 20MB - for anything bigger, send a link instead."
     );
     return;
   }
 
   if (message.video || message.document) {
-    const file = message.video || message.document;
-    if (file.file_size && file.file_size > 20 * 1024 * 1024) {
-      await sendMessage(env, chatId, "⚠️ That file is over Telegram's 20MB bot-download limit. Please send a link instead.");
-      return;
+    try {
+      const directUrl = await directUrlFromMessage(env, message);
+      await handleIncomingSource(env, chatId, "url", directUrl);
+    } catch (e) {
+      await sendMessage(env, chatId, `❌ ${e.message}`);
     }
-    // Resolve file_id -> a direct download URL now, while we still have the token.
-    const fileResp = await tg(env, "getFile", { file_id: file.file_id });
-    const fileData = await fileResp.json();
-    if (!fileData.ok) {
-      await sendMessage(env, chatId, "❌ Couldn't read that file from Telegram. Please try sending a link instead.");
-      return;
-    }
-    const directUrl = `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${fileData.result.file_path}`;
-    await handleIncomingSource(env, chatId, "url", directUrl);
     return;
   }
 
@@ -183,6 +249,23 @@ async function handleCallback(env, callbackQuery) {
         [{ text: "🖌️ Inpaint (center/moving logos)", data: "mode:inpaint" }],
         [{ text: "✂️ Crop (corner/edge logos)", data: "mode:crop" }],
       ]));
+    } else if (value === "introoutro") {
+      await dispatchAndFinish(env, chatId, state);
+    } else if (value === "abroll") {
+      state.step = "collect_brolls";
+      state.extra_sources = [];
+      await setState(env, chatId, state);
+      await sendMessage(env, chatId, "Send one or more B-roll clips or URLs, then send /done when finished.");
+    } else if (value === "stitcher") {
+      state.step = "collect_stitch_clips";
+      state.extra_sources = [];
+      await setState(env, chatId, state);
+      await sendMessage(env, chatId, "Send the remaining clips you want to stitch together, then send /done. The first clip is the source you already sent.");
+    } else if (value === "audioduck") {
+      state.step = "collect_voiceover";
+      state.extra_sources = [];
+      await setState(env, chatId, state);
+      await sendMessage(env, chatId, "Now send the voiceover audio file or URL. I’ll dispatch as soon as I receive it.");
     }
     return;
   }
@@ -246,6 +329,15 @@ async function dispatchAndFinish(env, chatId, state) {
       region: "",
       color_grade: state.color_grade || "",
       background_blur: state.background_blur || "false",
+      intro_text: state.intro_text || "Your Channel Name",
+      outro_text: state.outro_text || "Subscribe for more",
+      intro_duration: state.intro_duration || "3.5",
+      outro_duration: state.outro_duration || "3.5",
+      broll_sources_json: JSON.stringify(state.extra_sources || []),
+      stitch_clips_json: JSON.stringify([state.source_value, ...(state.extra_sources || [])]),
+      transition: state.transition || "crossfade",
+      transition_duration: state.transition_duration || "0.8",
+      voiceover_source: state.voiceover_source || ((state.extra_sources || [])[0] || ""),
     },
   });
 

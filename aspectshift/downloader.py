@@ -35,6 +35,10 @@ class InvalidVideoError(RuntimeError):
     """Raised when a local file is missing, unreadable, or corrupted."""
 
 
+class InvalidAudioError(RuntimeError):
+    """Raised when a local file is missing, unreadable, or not audio-only."""
+
+
 class MissingDependencyError(RuntimeError):
     """Raised when a required external binary (ffmpeg/ffprobe/yt-dlp) is absent."""
 
@@ -100,22 +104,71 @@ def probe_video(path: str) -> dict:
     }
 
 
-def download_from_url(url: str, output_dir: str) -> str:
-    """Download `url` as best-quality mp4 into `output_dir` using yt-dlp. Returns local path."""
+def probe_audio(path: str) -> dict:
+    """Return {duration, has_audio, sample_rate, channels, audio_codec} for an audio file."""
+    _require_binary("ffprobe")
+    if not os.path.isfile(path):
+        raise InvalidAudioError(f"File does not exist: {path}")
+
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-print_format", "json",
+        "-show_streams", "-show_format",
+        path,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0 or not result.stdout.strip():
+        raise InvalidAudioError(
+            f"ffprobe could not read '{path}'. The file may be corrupted or not a valid audio file. stderr: {result.stderr.strip()[:500]}"
+        )
+
+    try:
+        info = json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        raise InvalidAudioError(f"ffprobe returned malformed JSON for '{path}': {e}")
+
+    streams = info.get("streams", [])
+    audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
+
+    if not audio_streams:
+        raise InvalidAudioError(f"'{path}' contains no audio stream (corrupted or not audio-only).")
+
+    a = audio_streams[0]
+    duration = float(info.get("format", {}).get("duration", 0.0) or 0.0)
+    return {
+        "duration": duration,
+        "has_audio": True,
+        "sample_rate": int(a.get("sample_rate", 0) or 0),
+        "channels": int(a.get("channels", 0) or 0),
+        "audio_codec": a.get("codec_name", "unknown"),
+    }
+
+
+def download_from_url(url: str, output_dir: str, audio_only: bool = False) -> str:
+    """Download `url` into `output_dir` using yt-dlp. Returns local path."""
     _require_binary("yt-dlp")
     os.makedirs(output_dir, exist_ok=True)
 
     unique_id = uuid.uuid4().hex[:8]
     out_template = os.path.join(output_dir, f"source_{unique_id}.%(ext)s")
 
-    cmd = [
-        "yt-dlp",
-        "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b",
-        "--merge-output-format", "mp4",
-        "--no-playlist",
-        "-o", out_template,
-        url,
-    ]
+    if audio_only:
+        cmd = [
+            "yt-dlp",
+            "-f", "ba/bestaudio/b",
+            "--no-playlist",
+            "-o", out_template,
+            url,
+        ]
+    else:
+        cmd = [
+            "yt-dlp",
+            "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b",
+            "--merge-output-format", "mp4",
+            "--no-playlist",
+            "-o", out_template,
+            url,
+        ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise DownloadError(
@@ -161,6 +214,33 @@ def resolve_input(input_path: str | None = None, url: str | None = None, output_
         f"[downloader] Resolved input: {local_path} "
         f"({info['width']}x{info['height']}, {info['duration']:.1f}s, "
         f"audio={'yes' if info['has_audio'] else 'no'})",
+        file=sys.stderr,
+    )
+    return local_path
+
+
+def resolve_audio_input(input_path: str | None = None, url: str | None = None, output_dir: str = ".") -> str:
+    """
+    Resolve either a local audio file or a URL into a validated local audio path.
+    Exactly one of input_path / url must be provided.
+    """
+    if bool(input_path) == bool(url):
+        raise ValueError("Provide exactly one of --voiceover path or URL, not both/neither.")
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    if url:
+        print(f"[downloader] Downloading source audio from URL: {url}", file=sys.stderr)
+        local_path = download_from_url(url, output_dir, audio_only=True)
+    else:
+        if not os.path.isfile(input_path):
+            raise InvalidAudioError(f"Input file not found: {input_path}")
+        local_path = os.path.abspath(input_path)
+
+    info = probe_audio(local_path)
+    print(
+        f"[downloader] Resolved audio input: {local_path} "
+        f"({info['duration']:.1f}s, sample_rate={info['sample_rate']}, channels={info['channels']})",
         file=sys.stderr,
     )
     return local_path
