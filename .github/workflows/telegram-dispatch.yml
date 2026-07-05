@@ -68,6 +68,9 @@ jobs:
           TRANSITION: ${{ github.event.client_payload.options.transition }}
           TRANSITION_DURATION: ${{ github.event.client_payload.options.transition_duration }}
           VOICEOVER_SOURCE: ${{ github.event.client_payload.options.voiceover_source }}
+          TARGET_LUFS: ${{ github.event.client_payload.options.target_lufs }}
+          TARGET_TP: ${{ github.event.client_payload.options.target_tp }}
+          TARGET_LRA: ${{ github.event.client_payload.options.target_lra }}
         run: python bot/run_job.py
 
       - name: Upload job output as a build artifact too (backup if Telegram upload failed)

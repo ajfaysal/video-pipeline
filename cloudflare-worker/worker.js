@@ -48,7 +48,6 @@ function answerCallback(env, callbackQueryId, text) {
 }
 
 function inlineKeyboard(rows) {
-  // rows: array of arrays of {text, data}
   return { inline_keyboard: rows.map(row => row.map(btn => ({ text: btn.text, callback_data: btn.data }))) };
 }
 
@@ -58,7 +57,6 @@ async function getState(env, chatId) {
 }
 
 async function setState(env, chatId, state) {
-  // Auto-expire stale flows after 1 hour so KV doesn't accumulate abandoned sessions.
   await env.BOT_STATE.put(`chat:${chatId}`, JSON.stringify(state), { expirationTtl: 3600 });
 }
 
@@ -89,22 +87,64 @@ async function dispatchJob(env, payload) {
 }
 
 const TOOL_LABELS = {
-  aspectshift: "🔳 AspectShift (16:9 → 9:16)",
-  clipharvest: "✂️ ClipHarvest (extract best clips)",
-  watermarkwipe: "🧽 WatermarkWipe (remove watermark)",
-  introoutro: "🎬 IntroOutro (brand intro + outro)",
-  abroll: "🧩 ABRoll (auto B-roll inserts)",
-  stitcher: "🧵 Stitcher (join multiple clips)",
-  audioduck: "🎙️ AudioDuck (duck music under voiceover)",
+  aspectshift: "🔳 AspectShift",
+  clipharvest: "✂️ ClipHarvest",
+  watermarkwipe: "🧽 WatermarkWipe",
+  introoutro: "🎬 IntroOutro",
+  abroll: "🧩 ABRoll",
+  stitcher: "🧵 Stitcher",
+  audioduck: "🎙️ AudioDuck",
+  loudnorm: "📶 LoudNorm",
+  autochapters: "📊 AutoChapters",
 };
 
-function looksLikeUrl(text) {
-  return /^https?:\/\/\S+$/i.test(text.trim());
+const TOOL_GROUPS = [
+  {
+    title: "🎬 Video Format",
+    items: [
+      { tool: "aspectshift", description: "convert 16:9 video into vertical 9:16" },
+      { tool: "loudnorm", description: "normalize audio loudness to -14 LUFS" },
+    ],
+  },
+  {
+    title: "✂️ Editing",
+    items: [
+      { tool: "clipharvest", description: "extract the best short clips from a long video" },
+      { tool: "abroll", description: "insert B-roll around natural cut points" },
+      { tool: "introoutro", description: "add a branded intro and outro card" },
+      { tool: "stitcher", description: "join multiple clips with transitions" },
+      { tool: "audioduck", description: "duck background music under voiceover" },
+    ],
+  },
+  {
+    title: "🎨 Enhancement",
+    items: [
+      { tool: "watermarkwipe", description: "remove logos and watermarks" },
+    ],
+  },
+  {
+    title: "📊 Metadata",
+    items: [
+      { tool: "autochapters", description: "generate YouTube chapters from the transcript" },
+    ],
+  },
+];
+
+function menuText() {
+  return [
+    "Pick a tool first, then I’ll ask you for the video or link:",
+    "",
+    ...TOOL_GROUPS.flatMap(group => [
+      group.title,
+      ...group.items.map(item => `• ${TOOL_LABELS[item.tool]} - ${item.description}`),
+      "",
+    ]),
+    "Direct uploads over Telegram are limited to 20MB. For larger files, send a link instead.",
+  ].join("\n");
 }
 
-async function handleIncomingSource(env, chatId, sourceType, sourceValue) {
-  await setState(env, chatId, { step: "choose_tool", source_type: sourceType, source_value: sourceValue });
-  await sendMessage(env, chatId, "Got it! Which tool do you want to run?", inlineKeyboard([
+function menuKeyboard() {
+  return inlineKeyboard([
     [{ text: TOOL_LABELS.aspectshift, data: "tool:aspectshift" }],
     [{ text: TOOL_LABELS.clipharvest, data: "tool:clipharvest" }],
     [{ text: TOOL_LABELS.watermarkwipe, data: "tool:watermarkwipe" }],
@@ -112,16 +152,61 @@ async function handleIncomingSource(env, chatId, sourceType, sourceValue) {
     [{ text: TOOL_LABELS.abroll, data: "tool:abroll" }],
     [{ text: TOOL_LABELS.stitcher, data: "tool:stitcher" }],
     [{ text: TOOL_LABELS.audioduck, data: "tool:audioduck" }],
-  ]));
+    [{ text: TOOL_LABELS.loudnorm, data: "tool:loudnorm" }],
+    [{ text: TOOL_LABELS.autochapters, data: "tool:autochapters" }],
+  ]);
 }
 
-async function directUrlFromMessage(env, message) {
+function withBackButton(rows) {
+  return inlineKeyboard([...rows, [{ text: "🏠 Back to Menu", data: "menu" }]]);
+}
+
+function sourceInstructions(tool) {
+  switch (tool) {
+    case "aspectshift":
+      return "Send the video you want converted to vertical 9:16.";
+    case "clipharvest":
+      return "Send your long video link or file to analyze for the best clips.";
+    case "watermarkwipe":
+      return "Send the video you want to clean up.";
+    case "introoutro":
+      return "Send the video you want to wrap with an intro and outro.";
+    case "abroll":
+      return "Send the main video first. I’ll ask for B-roll clips next.";
+    case "stitcher":
+      return "Send the first clip you want stitched. I’ll ask for the remaining clips next.";
+    case "audioduck":
+      return "Send the main video first. I’ll ask for the voiceover track next.";
+    case "loudnorm":
+      return "Send the video you want normalized to broadcast loudness.";
+    case "autochapters":
+      return "Send your long video link or file. I’ll generate chapter timestamps from the transcript.";
+    default:
+      return "Send the video or link for this tool.";
+  }
+}
+
+function looksLikeUrl(text) {
+  return /^https?:\/\/\S+$/i.test(text.trim());
+}
+
+async function showMainMenu(env, chatId) {
+  await clearState(env, chatId);
+  await sendMessage(env, chatId, menuText(), menuKeyboard());
+}
+
+async function promptForSource(env, chatId, tool) {
+  await setState(env, chatId, { step: "awaiting_source", tool });
+  await sendMessage(env, chatId, sourceInstructions(tool), withBackButton([]));
+}
+
+async function sourceFromMessage(env, message, allowAudio = false) {
   const text = (message.text || "").trim();
   if (looksLikeUrl(text)) {
     return text;
   }
 
-  const file = message.video || message.document || message.audio;
+  const file = message.video || message.document || (allowAudio ? message.audio : null);
   if (!file) return null;
 
   if (file.file_size && file.file_size > 20 * 1024 * 1024) {
@@ -137,19 +222,102 @@ async function directUrlFromMessage(env, message) {
   return `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${fileData.result.file_path}`;
 }
 
+async function continueAfterSource(env, chatId, state) {
+  if (state.tool === "aspectshift") {
+    state.step = "choose_mode_aspectshift";
+    await setState(env, chatId, state);
+    await sendMessage(env, chatId, "Which conversion mode?", withBackButton([
+      [{ text: "🌫️ Blur-pad (recommended, zero crop loss)", data: "mode:blur" }],
+      [{ text: "✂️ Smart crop (no blur pillarbox)", data: "mode:crop" }],
+    ]));
+    return;
+  }
+
+  if (state.tool === "clipharvest") {
+    state.step = "choose_clip_count";
+    await setState(env, chatId, state);
+    await sendMessage(env, chatId, "How many clips should I extract?", withBackButton([
+      [{ text: "3 clips", data: "clips:3" }, { text: "5 clips", data: "clips:5" }, { text: "8 clips", data: "clips:8" }],
+    ]));
+    return;
+  }
+
+  if (state.tool === "watermarkwipe") {
+    state.step = "choose_mode_watermark";
+    await setState(env, chatId, state);
+    await sendMessage(env, chatId, "Which removal mode?", withBackButton([
+      [{ text: "🖌️ Inpaint (center/moving logos)", data: "mode:inpaint" }],
+      [{ text: "✂️ Crop (corner/edge logos)", data: "mode:crop" }],
+    ]));
+    return;
+  }
+
+  if (state.tool === "abroll") {
+    state.step = "collect_brolls";
+    state.extra_sources = [];
+    await setState(env, chatId, state);
+    await sendMessage(env, chatId, "Send one or more B-roll clips or URLs, then send /done when finished.", withBackButton([]));
+    return;
+  }
+
+  if (state.tool === "stitcher") {
+    state.step = "collect_stitch_clips";
+    state.extra_sources = [];
+    await setState(env, chatId, state);
+    await sendMessage(env, chatId, "Send the remaining clips you want to stitch together, then send /done. The first clip is the one you already sent.", withBackButton([]));
+    return;
+  }
+
+  if (state.tool === "audioduck") {
+    state.step = "collect_voiceover";
+    state.extra_sources = [];
+    await setState(env, chatId, state);
+    await sendMessage(env, chatId, "Now send the voiceover audio file or URL. I’ll dispatch as soon as I receive it.", withBackButton([]));
+    return;
+  }
+
+  await dispatchAndFinish(env, chatId, state);
+}
+
+async function handleSourceMessage(env, chatId, state, message) {
+  try {
+    const allowAudio = state.tool === "audioduck" && state.step === "collect_voiceover";
+    const sourceValue = await sourceFromMessage(env, message, allowAudio);
+    if (!sourceValue) {
+      await sendMessage(env, chatId, sourceInstructions(state.tool), withBackButton([]));
+      return;
+    }
+
+    state.source_type = "url";
+    state.source_value = sourceValue;
+    await continueAfterSource(env, chatId, state);
+  } catch (e) {
+    await sendMessage(env, chatId, `❌ ${e.message}`, withBackButton([]));
+  }
+}
+
 async function handleMessage(env, message) {
   const chatId = message.chat.id;
   const text = (message.text || "").trim();
   const state = await getState(env, chatId);
 
+  if (text === "/start" || text === "/help" || text === "/menu") {
+    await showMainMenu(env, chatId);
+    return;
+  }
+
   if (state && ["collect_brolls", "collect_stitch_clips", "collect_voiceover"].includes(state.step)) {
     if (text === "/done") {
       if (state.step === "collect_brolls" && (!state.extra_sources || state.extra_sources.length < 1)) {
-        await sendMessage(env, chatId, "Send at least one B-roll clip before /done.");
+        await sendMessage(env, chatId, "Send at least one B-roll clip before /done.", withBackButton([]));
         return;
       }
       if (state.step === "collect_stitch_clips" && (!state.extra_sources || state.extra_sources.length < 1)) {
-        await sendMessage(env, chatId, "Send at least one additional clip before /done so there are at least two clips total.");
+        await sendMessage(env, chatId, "Send at least one additional clip before /done so there are at least two clips total.", withBackButton([]));
+        return;
+      }
+      if (state.step === "collect_voiceover") {
+        await sendMessage(env, chatId, "Send the voiceover audio file or URL first.", withBackButton([]));
         return;
       }
       await dispatchAndFinish(env, chatId, state);
@@ -157,9 +325,9 @@ async function handleMessage(env, message) {
     }
 
     try {
-      const directUrl = await directUrlFromMessage(env, message);
+      const directUrl = await sourceFromMessage(env, message, state.step === "collect_voiceover");
       if (!directUrl) {
-        await sendMessage(env, chatId, "Send a video/audio file or a direct URL, or /done when you're finished.");
+        await sendMessage(env, chatId, "Send a video/audio file or a direct URL, or /done when you're finished.", withBackButton([]));
         return;
       }
 
@@ -173,100 +341,48 @@ async function handleMessage(env, message) {
       }
 
       await setState(env, chatId, state);
-      await sendMessage(env, chatId, `Added ${state.extra_sources.length} item(s). Send more or /done.`);
+      await sendMessage(env, chatId, `Added ${state.extra_sources.length} item(s). Send more or /done.`, withBackButton([]));
       return;
     } catch (e) {
-      await sendMessage(env, chatId, `❌ ${e.message}`);
+      await sendMessage(env, chatId, `❌ ${e.message}`, withBackButton([]));
       return;
     }
   }
 
-  if (text === "/start" || text === "/help") {
-    await sendMessage(env, chatId,
-      "👋 Send me a video link (YouTube etc.) to process, then pick a tool:\n\n" +
-      "🔳 AspectShift - convert 16:9 to 9:16\n" +
-      "✂️ ClipHarvest - auto-extract the best short clips\n" +
-      "🧽 WatermarkWipe - remove a watermark/logo\n" +
-      "🎬 IntroOutro - add a branded intro and outro\n" +
-      "🧩 ABRoll - add auto-detected B-roll inserts\n" +
-      "🧵 Stitcher - join multiple clips with transitions\n" +
-      "🎙️ AudioDuck - duck music under a narration track\n\n" +
-      "Note: for a directly-uploaded video file, Telegram only lets bots fetch files up to 20MB - for anything bigger, send a link instead."
-    );
+  if (state && state.step === "awaiting_source") {
+    await handleSourceMessage(env, chatId, state, message);
     return;
   }
 
-  if (message.video || message.document) {
-    try {
-      const directUrl = await directUrlFromMessage(env, message);
-      await handleIncomingSource(env, chatId, "url", directUrl);
-    } catch (e) {
-      await sendMessage(env, chatId, `❌ ${e.message}`);
-    }
+  if (message.video || message.document || message.audio || looksLikeUrl(text)) {
+    await sendMessage(env, chatId, "Choose a tool from the menu first.", menuKeyboard());
     return;
   }
 
-  if (looksLikeUrl(text)) {
-    await handleIncomingSource(env, chatId, "url", text);
-    return;
-  }
-
-  await sendMessage(env, chatId, "Send me a video link or a video file to get started (or /help).");
+  await showMainMenu(env, chatId);
 }
 
 async function handleCallback(env, callbackQuery) {
   const chatId = callbackQuery.message.chat.id;
   const data = callbackQuery.data || "";
   const state = await getState(env, chatId);
+  const [kind, value] = data.split(":");
 
-  if (!state) {
-    await answerCallback(env, callbackQuery.id, "This request expired, please send the video again.");
+  await answerCallback(env, callbackQuery.id);
+
+  if (kind === "menu") {
+    await showMainMenu(env, chatId);
     return;
   }
 
-  const [kind, value] = data.split(":");
-  await answerCallback(env, callbackQuery.id);
-
   if (kind === "tool") {
-    state.tool = value;
-    if (value === "aspectshift") {
-      state.step = "choose_mode_aspectshift";
-      await setState(env, chatId, state);
-      await sendMessage(env, chatId, "Which conversion mode?", inlineKeyboard([
-        [{ text: "🌫️ Blur-pad (recommended, zero crop loss)", data: "mode:blur" }],
-        [{ text: "✂️ Smart crop (no blur pillarbox)", data: "mode:crop" }],
-      ]));
-    } else if (value === "clipharvest") {
-      state.step = "choose_clip_count";
-      await setState(env, chatId, state);
-      await sendMessage(env, chatId, "How many clips should I extract?", inlineKeyboard([
-        [{ text: "3 clips", data: "clips:3" }, { text: "5 clips", data: "clips:5" }, { text: "8 clips", data: "clips:8" }],
-      ]));
-    } else if (value === "watermarkwipe") {
-      state.step = "choose_mode_watermark";
-      await setState(env, chatId, state);
-      await sendMessage(env, chatId, "Which removal mode?", inlineKeyboard([
-        [{ text: "🖌️ Inpaint (center/moving logos)", data: "mode:inpaint" }],
-        [{ text: "✂️ Crop (corner/edge logos)", data: "mode:crop" }],
-      ]));
-    } else if (value === "introoutro") {
-      await dispatchAndFinish(env, chatId, state);
-    } else if (value === "abroll") {
-      state.step = "collect_brolls";
-      state.extra_sources = [];
-      await setState(env, chatId, state);
-      await sendMessage(env, chatId, "Send one or more B-roll clips or URLs, then send /done when finished.");
-    } else if (value === "stitcher") {
-      state.step = "collect_stitch_clips";
-      state.extra_sources = [];
-      await setState(env, chatId, state);
-      await sendMessage(env, chatId, "Send the remaining clips you want to stitch together, then send /done. The first clip is the source you already sent.");
-    } else if (value === "audioduck") {
-      state.step = "collect_voiceover";
-      state.extra_sources = [];
-      await setState(env, chatId, state);
-      await sendMessage(env, chatId, "Now send the voiceover audio file or URL. I’ll dispatch as soon as I receive it.");
-    }
+    await setState(env, chatId, { tool: value });
+    await promptForSource(env, chatId, value);
+    return;
+  }
+
+  if (!state) {
+    await answerCallback(env, callbackQuery.id, "This step expired, please open the menu again.");
     return;
   }
 
@@ -289,7 +405,7 @@ async function handleCallback(env, callbackQuery) {
     state.mode = value;
     state.step = "choose_color_grade";
     await setState(env, chatId, state);
-    await sendMessage(env, chatId, "Add color grading?", inlineKeyboard([
+    await sendMessage(env, chatId, "Add color grading?", withBackButton([
       [{ text: "None", data: "grade:none" }],
       [{ text: "🎬 Cinematic", data: "grade:cinematic" }, { text: "🌈 Vibrant", data: "grade:vibrant" }],
       [{ text: "🔥 Warm", data: "grade:warm" }, { text: "❄️ Cool", data: "grade:cool" }],
@@ -301,7 +417,7 @@ async function handleCallback(env, callbackQuery) {
     state.color_grade = value === "none" ? "" : value;
     state.step = "choose_bg_blur";
     await setState(env, chatId, state);
-    await sendMessage(env, chatId, "Add portrait-mode background blur?", inlineKeyboard([
+    await sendMessage(env, chatId, "Add portrait-mode background blur?", withBackButton([
       [{ text: "Yes", data: "bgblur:true" }, { text: "No", data: "bgblur:false" }],
     ]));
     return;
@@ -312,6 +428,8 @@ async function handleCallback(env, callbackQuery) {
     await dispatchAndFinish(env, chatId, state);
     return;
   }
+
+  await answerCallback(env, callbackQuery.id, "That step is no longer active. Please reopen the menu.");
 }
 
 async function dispatchAndFinish(env, chatId, state) {
@@ -338,15 +456,18 @@ async function dispatchAndFinish(env, chatId, state) {
       transition: state.transition || "crossfade",
       transition_duration: state.transition_duration || "0.8",
       voiceover_source: state.voiceover_source || ((state.extra_sources || [])[0] || ""),
+      target_lufs: state.target_lufs || "-14",
+      target_tp: state.target_tp || "-1.5",
+      target_lra: state.target_lra || "11",
     },
   });
 
   await clearState(env, chatId);
 
   if (ok) {
-    await sendMessage(env, chatId, "🚀 Job dispatched! I'll message you here with progress and the finished file(s).");
+    await sendMessage(env, chatId, "🚀 Job dispatched! I'll message you here with progress and the finished file(s).", menuKeyboard());
   } else {
-    await sendMessage(env, chatId, "❌ Couldn't start the job (GitHub dispatch failed). Please try again in a moment.");
+    await sendMessage(env, chatId, "❌ Couldn't start the job (GitHub dispatch failed). Please try again in a moment.", menuKeyboard());
   }
 }
 
@@ -378,7 +499,6 @@ export default {
       console.error("Webhook handling error:", e);
     }
 
-    // Always 200 quickly - Telegram retries aggressively on non-2xx responses.
     return new Response("OK", { status: 200 });
   },
 };

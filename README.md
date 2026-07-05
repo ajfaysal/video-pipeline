@@ -10,6 +10,8 @@ with zero VPS required (Cloudflare Workers + GitHub Actions).
 - **IntroOutro** - adds a branded intro and outro card with ffmpeg drawtext fades
 - **Stitcher** - joins multiple clips with crossfade, wipe, or cut transitions
 - **AudioDuck** - ducks background music under a voiceover track
+- **LoudNorm** - normalizes audio loudness to broadcast-standard -14 LUFS with two-pass ffmpeg loudnorm
+- **AutoChapters** - generates YouTube chapter timestamps from transcripts and embeds chapter metadata
 
 ## Requirements
 
@@ -133,19 +135,15 @@ python audioduck/main.py --video video.mp4 --voiceover narration.mp3 --output-di
 ## Running via GitHub Actions (no local setup needed)
 
 Each tool has a `workflow_dispatch`-triggered workflow under `.github/workflows/`:
-`aspectshift.yml`, `clipharvest.yml`, `watermarkwipe.yml`, `abroll.yml`, `introoutro.yml`, `stitcher.yml`, `audioduck.yml`. Trigger them from the Actions tab with the requested repo-relative path(s) or URL(s), and download the result from the run's Artifacts.
+`aspectshift.yml`, `clipharvest.yml`, `watermarkwipe.yml`, `abroll.yml`, `introoutro.yml`, `stitcher.yml`, `audioduck.yml`, `loudnorm.yml`, `autochapters.yml`. Trigger them from the Actions tab with the requested repo-relative path(s) or URL(s), and download the result from the run's Artifacts.
 
 ---
 
 ## Telegram Bot (no VPS required)
 
-Architecture: **Cloudflare Worker** (receives Telegram messages, collects your tool/options choice
-via inline buttons) → triggers **GitHub Actions** (`telegram-dispatch.yml`, does the actual
-ffmpeg/whisper work) → Actions sends the finished video/thumbnail straight back to your chat.
-Nothing needs to run 24/7 on a server you manage.
+Architecture: **Cloudflare Worker** (shows a menu, then collects your tool/options choice via inline buttons) → triggers **GitHub Actions** (`telegram-dispatch.yml`, does the actual ffmpeg/whisper work) → Actions sends the finished video/thumbnail straight back to your chat. Nothing needs to run 24/7 on a server you manage.
 
-The Worker now exposes the new ABRoll, IntroOutro, Stitcher, and AudioDuck tools as bot options;
-ABRoll/Stitcher will ask for additional clips, and AudioDuck will ask for the narration track before dispatching.
+The Worker exposes AspectShift, ClipHarvest, WatermarkWipe, ABRoll, IntroOutro, Stitcher, AudioDuck, LoudNorm, and AutoChapters as bot options. ABRoll and Stitcher ask for additional clips, AudioDuck asks for the narration track, and LoudNorm/AutoChapters dispatch as soon as the source video is collected.
 
 ### Setup
 
@@ -171,7 +169,7 @@ ABRoll/Stitcher will ask for additional clips, and AudioDuck will ask for the na
      -d "url=https://<your-worker>.workers.dev" \
      -d "secret_token=<same TELEGRAM_WEBHOOK_SECRET you set above>"
    ```
-5. Message your bot a video link, pick a tool from the buttons, and it'll DM you the result when done.
+5. Message your bot `/start` or `/menu`, pick a tool from the buttons, then send the video/link when prompted. Use `🏠 Back to Menu` any time to restart the flow without resending `/start`.
 
 **Limits to know:**
 - Directly-uploaded video files: Telegram bots can only fetch files ≤20MB. For anything bigger,
@@ -194,8 +192,32 @@ abroll/             main.py
 introoutro/         main.py
 stitcher/           main.py
 audioduck/          main.py
+loudnorm/           main.py
+autochapters/       main.py
 bot/                telegram_notify.py, run_job.py   (used by telegram-dispatch.yml)
 cloudflare-worker/  worker.js, wrangler.toml
-.github/workflows/  aspectshift.yml, clipharvest.yml, watermarkwipe.yml, abroll.yml, introoutro.yml, stitcher.yml, audioduck.yml, telegram-dispatch.yml
+.github/workflows/  aspectshift.yml, clipharvest.yml, watermarkwipe.yml, abroll.yml, introoutro.yml, stitcher.yml, audioduck.yml, loudnorm.yml, autochapters.yml, telegram-dispatch.yml
 requirements.txt    combined dependencies for all tools + the bot job runner
 ```
+
+## 8. LoudNorm
+
+```bash
+python loudnorm/main.py --input video.mp4 --target-lufs -14 --output-dir ./output
+python loudnorm/main.py --url "https://youtube.com/..." --target-lufs -14 --output-dir ./output
+```
+
+- Runs ffmpeg `loudnorm` in two passes so the measured LUFS, true peak, and loudness range are reused for the final render.
+- Copies the video stream and re-encodes the audio stream to AAC after normalization.
+- Targets `-14 LUFS` by default, which is the standard used by most YouTube/streaming workflows.
+
+## 9. AutoChapters
+
+```bash
+python autochapters/main.py --input video.mp4 --output-dir ./output
+python autochapters/main.py --url "https://youtube.com/..." --output-dir ./output
+```
+
+- Reuses the ClipHarvest transcriber to build a transcript cache and then applies simple silence-gap plus transcript-shift heuristics to find chapter boundaries.
+- Writes a paste-ready `*_chapters.txt` file in the exact YouTube chapter format and also remuxes the video with embedded ffmpeg chapter metadata.
+- Uses the first chapter as `00:00 Intro` and generates short topic labels from the nearby transcript text.

@@ -4,8 +4,8 @@ run_job.py
 Entry point invoked by .github/workflows/telegram-dispatch.yml.
 Reads job parameters from environment variables (populated from the
 repository_dispatch client_payload sent by the Cloudflare Worker), runs
-the requested tool (AspectShift / ClipHarvest / WatermarkWipe), and sends
-the resulting file(s) straight back to the requesting Telegram chat.
+the requested tool, and sends the resulting file(s) straight back to the
+requesting Telegram chat.
 
 Expected environment variables:
     CHAT_ID        - Telegram chat id to reply to (required)
@@ -27,6 +27,9 @@ Expected environment variables:
     TRANSITION     - stitcher only, transition type
     TRANSITION_DURATION - stitcher only, xfade duration in seconds
     VOICEOVER_SOURCE - audioduck only, audio URL/path for narration
+    TARGET_LUFS    - loudnorm only, target integrated loudness in LUFS
+    TARGET_TP      - loudnorm only, target true peak in dBTP
+    TARGET_LRA     - loudnorm only, target loudness range in LU
 """
 
 from __future__ import annotations
@@ -62,6 +65,12 @@ def _send_output_videos(chat_id: str, output_dir: str, caption_prefix: str) -> N
     video_files = [f for f in sorted(os.listdir(output_dir)) if f.endswith(".mp4")]
     for f in video_files:
         send_video(chat_id, os.path.join(output_dir, f), caption=f"✅ {caption_prefix} done: {f}")
+
+
+def _send_output_documents(chat_id: str, output_dir: str, suffixes: tuple[str, ...], caption_prefix: str) -> None:
+    for f in sorted(os.listdir(output_dir)):
+        if f.endswith(suffixes):
+            send_document(chat_id, os.path.join(output_dir, f), caption=f"📄 {caption_prefix}: {f}")
 
 
 def run_aspectshift(chat_id: str) -> None:
@@ -217,6 +226,37 @@ def run_audioduck(chat_id: str) -> None:
     _send_output_videos(chat_id, output_dir, "AudioDuck")
 
 
+def run_loudnorm(chat_id: str) -> None:
+    source_type = _env("SOURCE_TYPE", required=True)
+    source_value = _env("SOURCE_VALUE", required=True)
+    target_lufs = _env("TARGET_LUFS", "-14")
+    target_tp = _env("TARGET_TP", "-1.5")
+    target_lra = _env("TARGET_LRA", "11")
+    output_dir = "./job_output"
+
+    cmd = [
+        sys.executable, "loudnorm/main.py", "--output-dir", output_dir,
+        "--target-lufs", target_lufs, "--target-tp", target_tp, "--target-lra", target_lra,
+    ]
+    cmd += ["--url", source_value] if source_type == "url" else ["--input", source_value]
+    _run(cmd)
+
+    _send_output_videos(chat_id, output_dir, f"LoudNorm ({target_lufs} LUFS)")
+
+
+def run_autochapters(chat_id: str) -> None:
+    source_type = _env("SOURCE_TYPE", required=True)
+    source_value = _env("SOURCE_VALUE", required=True)
+    output_dir = "./job_output"
+
+    cmd = [sys.executable, "autochapters/main.py", "--output-dir", output_dir]
+    cmd += ["--url", source_value] if source_type == "url" else ["--input", source_value]
+    _run(cmd)
+
+    _send_output_documents(chat_id, output_dir, ("_chapters.txt", ".ffmetadata"), "AutoChapters")
+    _send_output_videos(chat_id, output_dir, "AutoChapters")
+
+
 TOOL_RUNNERS = {
     "aspectshift": run_aspectshift,
     "clipharvest": run_clipharvest,
@@ -225,6 +265,8 @@ TOOL_RUNNERS = {
     "abroll": run_abroll,
     "stitcher": run_stitcher,
     "audioduck": run_audioduck,
+    "loudnorm": run_loudnorm,
+    "autochapters": run_autochapters,
 }
 
 
