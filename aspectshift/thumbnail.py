@@ -19,7 +19,7 @@ import sys
 import cv2
 import numpy as np
 
-from aspectshift.downloader import probe_video, InvalidVideoError
+from aspectshift.downloader import probe_video, InvalidVideoError, load_face_cascade
 
 MIN_HD_W = 1920
 MIN_HD_H = 1080
@@ -76,11 +76,14 @@ def _face_score(frame: np.ndarray, cascade: cv2.CascadeClassifier) -> float:
 
 
 def _pick_best_frame(frames: list[np.ndarray]) -> np.ndarray:
-    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    cascade = load_face_cascade()
 
     sharpness_vals = [_sharpness_score(f) for f in frames]
     saturation_vals = [_saturation_score(f) for f in frames]
-    face_vals = [_face_score(f, cascade) for f in frames]
+    if cascade is not None:
+        face_vals = [_face_score(f, cascade) for f in frames]
+    else:
+        face_vals = [0.0] * len(frames)
 
     def normalize(vals: list[float]) -> list[float]:
         lo, hi = min(vals), max(vals)
