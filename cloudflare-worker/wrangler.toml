@@ -5,7 +5,7 @@ compatibility_date = "2024-11-01"
 # Create with: wrangler kv namespace create BOT_STATE
 # Then paste the returned id below.
 kv_namespaces = [
-  { binding = "BOT_STATE", id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID" }
+  { binding = "BOT_STATE", id = "77f64729a620411592a0629ba678cd54" }
 ]
 
 # Secrets (do NOT put these here - set via `wrangler secret put <NAME>`):
