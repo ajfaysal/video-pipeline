@@ -14,6 +14,11 @@ Public API:
         Returns basic stream info (width, height, duration, has_audio, codec)
         via ffprobe. Used to validate the file isn't corrupted and to drive
         downstream decisions (e.g. does this file even have audio to copy).
+
+    load_face_cascade() -> cv2.CascadeClassifier | None
+        Attempts to load an OpenCV Haar cascade for face detection. Returns
+        None (instead of raising) when cv2 or the cascade data is unavailable,
+        so callers can gracefully skip face-detection scoring.
 """
 
 from __future__ import annotations
@@ -244,3 +249,45 @@ def resolve_audio_input(input_path: str | None = None, url: str | None = None, o
         file=sys.stderr,
     )
     return local_path
+
+
+def load_face_cascade():
+    """
+    Attempts to load an OpenCV Haar cascade for frontal-face detection.
+
+    Some OpenCV builds used in CI (e.g. opencv-python-headless without the
+    bundled data files, or minimal wheels) do not expose cv2.CascadeClassifier
+    or cv2.data. Rather than let every caller crash with an AttributeError,
+    this returns None in that case so tools can gracefully skip face-based
+    scoring and fall back to other heuristics (sharpness, saturation, etc).
+    """
+    try:
+        import cv2
+    except ImportError:
+        print("[downloader] cv2 is not installed; face detection disabled.", file=sys.stderr)
+        return None
+
+    cascade_classifier = getattr(cv2, "CascadeClassifier", None)
+    cascade_data = getattr(cv2, "data", None)
+    if cascade_classifier is None or cascade_data is None:
+        print(
+            "[downloader] This OpenCV build has no CascadeClassifier/data module; "
+            "face detection disabled.",
+            file=sys.stderr,
+        )
+        return None
+
+    try:
+        cascade_path = os.path.join(cascade_data.haarcascades, "haarcascade_frontalface_default.xml")
+        cascade = cascade_classifier(cascade_path)
+        if cascade.empty():
+            print(
+                f"[downloader] Haar cascade failed to load from '{cascade_path}'; "
+                f"face detection disabled.",
+                file=sys.stderr,
+            )
+            return None
+        return cascade
+    except Exception as e:
+        print(f"[downloader] Unexpected error loading face cascade: {e}; face detection disabled.", file=sys.stderr)
+        return None
