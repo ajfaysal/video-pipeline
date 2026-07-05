@@ -1,0 +1,66 @@
+name: LoudNorm
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: "Video URL to normalize (leave blank if using a local input path)"
+        required: false
+        default: ""
+      input_path:
+        description: "Local repo-relative path to a video file (leave blank if using video_url)"
+        required: false
+        default: ""
+      target_lufs:
+        description: "Target integrated loudness in LUFS"
+        required: false
+        default: "-14"
+      target_tp:
+        description: "Target true peak in dBTP"
+        required: false
+        default: "-1.5"
+      target_lra:
+        description: "Target loudness range in LU"
+        required: false
+        default: "11"
+
+jobs:
+  normalize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-loudnorm-${{ hashFiles('requirements.txt') }}
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run LoudNorm
+        run: |
+          if [ -n "${{ github.event.inputs.video_url }}" ]; then
+            python loudnorm/main.py --url "${{ github.event.inputs.video_url }}" --target-lufs "${{ github.event.inputs.target_lufs }}" --target-tp "${{ github.event.inputs.target_tp }}" --target-lra "${{ github.event.inputs.target_lra }}" --output-dir ./output
+          else
+            python loudnorm/main.py --input "${{ github.event.inputs.input_path }}" --target-lufs "${{ github.event.inputs.target_lufs }}" --target-tp "${{ github.event.inputs.target_tp }}" --target-lra "${{ github.event.inputs.target_lra }}" --output-dir ./output
+          fi
+
+      - name: Upload output artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: loudnorm-output
+          path: output/*_loudnorm.mp4
+          retention-days: 7

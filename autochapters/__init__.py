@@ -1,0 +1,1 @@
+"""AutoChapters tool package."""
