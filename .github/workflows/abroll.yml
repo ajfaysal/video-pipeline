@@ -1,0 +1,78 @@
+name: ABRoll
+
+on:
+  workflow_dispatch:
+    inputs:
+      main_input:
+        description: "Repo-relative path or URL for the main video"
+        required: true
+      broll_inputs:
+        description: "Space-separated repo-relative paths or URLs for B-roll clips"
+        required: true
+      insert_duration:
+        description: "Target B-roll insert duration in seconds"
+        required: false
+        default: "2.5"
+      transition_duration:
+        description: "xfade duration in seconds"
+        required: false
+        default: "0.75"
+
+jobs:
+  edit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-abroll-${{ hashFiles('requirements.txt') }}
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run ABRoll
+        env:
+          MAIN_INPUT: ${{ github.event.inputs.main_input }}
+          BROLL_INPUTS: ${{ github.event.inputs.broll_inputs }}
+          INSERT_DURATION: ${{ github.event.inputs.insert_duration }}
+          TRANSITION_DURATION: ${{ github.event.inputs.transition_duration }}
+        run: |
+          python - <<'PY'
+          import os
+          import shlex
+          import subprocess
+          import sys
+
+          main_input = os.environ["MAIN_INPUT"]
+          broll_inputs = shlex.split(os.environ["BROLL_INPUTS"])
+          args = [
+              sys.executable, "abroll/main.py",
+              "--main", main_input,
+              "--broll", *broll_inputs,
+              "--insert-duration", os.environ["INSERT_DURATION"],
+              "--transition-duration", os.environ["TRANSITION_DURATION"],
+              "--output-dir", "./output",
+          ]
+          raise SystemExit(subprocess.call(args))
+          PY
+
+      - name: Upload output artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: abroll-output
+          path: output/
+          retention-days: 7

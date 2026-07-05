@@ -1,0 +1,67 @@
+name: IntroOutro
+
+on:
+  workflow_dispatch:
+    inputs:
+      input_path:
+        description: "Repo-relative path or URL for the input video"
+        required: true
+      intro_text:
+        description: "Intro text"
+        required: false
+        default: "Your Channel Name"
+      outro_text:
+        description: "Outro text"
+        required: false
+        default: "Subscribe for more"
+      intro_duration:
+        description: "Intro duration in seconds"
+        required: false
+        default: "3.5"
+      outro_duration:
+        description: "Outro duration in seconds"
+        required: false
+        default: "3.5"
+
+jobs:
+  brand:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-introoutro-${{ hashFiles('requirements.txt') }}
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run IntroOutro
+        run: |
+          python introoutro/main.py \
+            --input "${{ github.event.inputs.input_path }}" \
+            --intro-text "${{ github.event.inputs.intro_text }}" \
+            --outro-text "${{ github.event.inputs.outro_text }}" \
+            --intro-duration "${{ github.event.inputs.intro_duration }}" \
+            --outro-duration "${{ github.event.inputs.outro_duration }}" \
+            --output-dir ./output
+
+      - name: Upload output artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: introoutro-output
+          path: output/
+          retention-days: 7
