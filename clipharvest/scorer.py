@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
+from aspectshift.downloader import load_face_cascade
 from clipharvest.config import (
     HOOK_KEYWORD_GROUPS,
     MAX_BOUNDARY_SILENCE,
@@ -187,7 +188,7 @@ def _visual_score(candidate: Candidate, video_path: str, sample_count: int = 8) 
         return 50.0, 50.0
 
     indices = np.linspace(start_frame, end_frame, num=min(sample_count, max(end_frame - start_frame, 2)), dtype=int)
-    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    face_cascade = load_face_cascade()  # None if this OpenCV build lacks cascade support
 
     prev_gray = None
     diffs = []
@@ -206,9 +207,10 @@ def _visual_score(candidate: Candidate, video_path: str, sample_count: int = 8) 
             diffs.append(float(np.mean(diff)))
         prev_gray = gray
 
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
-        if len(faces) > 0:
-            face_hits += 1
+        if face_cascade is not None:
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
+            if len(faces) > 0:
+                face_hits += 1
 
     cap.release()
 

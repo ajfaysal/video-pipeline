@@ -25,11 +25,22 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
+
+import requests
+
+_VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".mpg", ".mpeg", ".ts", ".3gp", ".flv", ".wmv")
+_AUDIO_EXTS = (".mp3", ".m4a", ".aac", ".wav", ".ogg", ".oga", ".opus", ".flac", ".wma", ".aiff")
+_GDRIVE_ID_RE = re.compile(
+    r"drive\.google\.com/(?:file/d/([-\w]{20,})|open\?id=([-\w]{20,})|uc\?(?:[^#]*&)?id=([-\w]{20,}))"
+)
+_DOWNLOAD_CHUNK = 1024 * 1024  # 1 MiB
 
 
 class DownloadError(RuntimeError):
@@ -149,8 +160,181 @@ def probe_audio(path: str) -> dict:
     }
 
 
+def _extract_gdrive_file_id(url: str) -> str | None:
+    """Return the Google Drive file id if `url` is a Drive share/view link, else None."""
+    m = _GDRIVE_ID_RE.search(url)
+    if not m:
+        return None
+    return next(g for g in m.groups() if g)
+
+
+def _ext_from_url_or_headers(url: str, content_type: str | None, content_disposition: str | None,
+                             audio_only: bool) -> str:
+    """Best-effort extension for a directly-downloaded file."""
+    # 1. Filename in Content-Disposition header.
+    if content_disposition:
+        m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', content_disposition)
+        if m:
+            ext = os.path.splitext(m.group(1).strip())[1].lower()
+            if ext in _VIDEO_EXTS or ext in _AUDIO_EXTS:
+                return ext
+    # 2. Extension in the URL path.
+    path_ext = os.path.splitext(urlparse(url).path)[1].lower()
+    if path_ext in _VIDEO_EXTS or path_ext in _AUDIO_EXTS:
+        return path_ext
+    # 3. Content-Type mapping.
+    if content_type:
+        ct = content_type.split(";")[0].strip().lower()
+        ct_map = {
+            "video/mp4": ".mp4", "video/quicktime": ".mov", "video/webm": ".webm",
+            "video/x-matroska": ".mkv", "video/x-msvideo": ".avi", "video/mpeg": ".mpg",
+            "audio/mpeg": ".mp3", "audio/mp4": ".m4a", "audio/aac": ".aac",
+            "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/ogg": ".ogg",
+            "audio/opus": ".opus", "audio/flac": ".flac",
+        }
+        if ct in ct_map:
+            return ct_map[ct]
+    return ".mp3" if audio_only else ".mp4"
+
+
+def _is_direct_file_url(url: str) -> bool:
+    """
+    True if `url` points straight at a media file that should be fetched with
+    plain HTTP instead of yt-dlp: Telegram Bot API file links, any URL whose
+    path ends in a known video/audio extension, or any URL whose server
+    reports a video/* or audio/* content-type.
+    """
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+
+    # Telegram Bot API file endpoint: https://api.telegram.org/file/bot<token>/...
+    if host == "api.telegram.org" and parsed.path.startswith("/file/"):
+        return True
+
+    ext = os.path.splitext(parsed.path)[1].lower()
+    if ext in _VIDEO_EXTS or ext in _AUDIO_EXTS:
+        return True
+
+    # Last resort: cheap HEAD request to sniff the content-type. Failures here
+    # simply mean "not direct" and we fall back to yt-dlp.
+    try:
+        resp = requests.head(url, allow_redirects=True, timeout=15)
+        ct = resp.headers.get("Content-Type", "").split(";")[0].strip().lower()
+        return ct.startswith("video/") or ct.startswith("audio/")
+    except requests.RequestException:
+        return False
+
+
+def _stream_to_disk(resp: requests.Response, dest_path: str, url: str) -> str:
+    try:
+        with open(dest_path, "wb") as fh:
+            for chunk in resp.iter_content(chunk_size=_DOWNLOAD_CHUNK):
+                if chunk:
+                    fh.write(chunk)
+    except requests.RequestException as e:
+        if os.path.isfile(dest_path):
+            os.remove(dest_path)
+        raise DownloadError(f"Connection dropped while downloading '{url}': {e}")
+    if not os.path.isfile(dest_path) or os.path.getsize(dest_path) == 0:
+        if os.path.isfile(dest_path):
+            os.remove(dest_path)
+        raise DownloadError(f"Download of '{url}' produced an empty file.")
+    return os.path.abspath(dest_path)
+
+
+def _download_direct(url: str, output_dir: str, audio_only: bool = False) -> str:
+    """Download a direct file URL with streaming requests (no yt-dlp)."""
+    os.makedirs(output_dir, exist_ok=True)
+    unique_id = uuid.uuid4().hex[:8]
+    try:
+        resp = requests.get(url, stream=True, allow_redirects=True, timeout=(15, 120))
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        raise DownloadError(f"Direct download of '{url}' failed: {e}")
+
+    ext = _ext_from_url_or_headers(
+        url, resp.headers.get("Content-Type"), resp.headers.get("Content-Disposition"), audio_only
+    )
+    dest_path = os.path.join(output_dir, f"source_{unique_id}{ext}")
+    path = _stream_to_disk(resp, dest_path, url)
+    print(f"[downloader] Direct download complete: {path}", file=sys.stderr)
+    return path
+
+
+def _download_gdrive(file_id: str, output_dir: str, audio_only: bool = False) -> str:
+    """
+    Download a Google Drive file by id, handling the "can't scan for viruses"
+    confirmation interstitial that Drive serves for large files.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    unique_id = uuid.uuid4().hex[:8]
+    session = requests.Session()
+    url = f"https://drive.google.com/uc?export=download&id={file_id}"
+
+    try:
+        resp = session.get(url, stream=True, timeout=(15, 120))
+        resp.raise_for_status()
+
+        ct = resp.headers.get("Content-Type", "").lower()
+        if "text/html" in ct:
+            # Large file: Drive returned the confirmation page instead of the
+            # bytes. Parse the download form's hidden fields and re-request
+            # against the endpoint the form posts to.
+            html = resp.text
+            resp.close()
+
+            action_m = re.search(r'action="([^"]+)"', html)
+            action = action_m.group(1).replace("&amp;", "&") if action_m else \
+                "https://drive.usercontent.google.com/download"
+            params = {"id": file_id, "export": "download", "confirm": "t"}
+            for name, value in re.findall(r'name="([^"]+)"\s+value="([^"]*)"', html):
+                params[name] = value
+            # Legacy cookie-based token (older interstitial variant).
+            for cookie_name, cookie_value in session.cookies.items():
+                if cookie_name.startswith("download_warning"):
+                    params["confirm"] = cookie_value
+
+            resp = session.get(action, params=params, stream=True, timeout=(15, 300))
+            resp.raise_for_status()
+            if "text/html" in resp.headers.get("Content-Type", "").lower():
+                raise DownloadError(
+                    f"Google Drive refused to serve file '{file_id}'. "
+                    f"Make sure the file is shared as 'Anyone with the link'."
+                )
+    except requests.RequestException as e:
+        raise DownloadError(f"Google Drive download of file '{file_id}' failed: {e}")
+
+    ext = _ext_from_url_or_headers(
+        "", resp.headers.get("Content-Type"), resp.headers.get("Content-Disposition"), audio_only
+    )
+    dest_path = os.path.join(output_dir, f"source_{unique_id}{ext}")
+    path = _stream_to_disk(resp, dest_path, f"gdrive:{file_id}")
+    print(f"[downloader] Google Drive download complete: {path}", file=sys.stderr)
+    return path
+
+
 def download_from_url(url: str, output_dir: str, audio_only: bool = False) -> str:
-    """Download `url` into `output_dir` using yt-dlp. Returns local path."""
+    """
+    Download `url` into `output_dir`. Returns local path.
+
+    Routing:
+      - Google Drive share links -> direct-download endpoint (with large-file
+        confirmation-token handling).
+      - Direct file URLs (Telegram Bot API file links, *.mp4/... paths, or
+        anything serving a video/audio content-type) -> streaming requests.
+      - Everything else (YouTube, Twitter, TikTok, ...) -> yt-dlp extraction.
+    """
+    gdrive_id = _extract_gdrive_file_id(url)
+    if gdrive_id:
+        print(f"[downloader] Detected Google Drive link (id={gdrive_id}); using direct Drive download.",
+              file=sys.stderr)
+        return _download_gdrive(gdrive_id, output_dir, audio_only=audio_only)
+
+    if _is_direct_file_url(url):
+        print("[downloader] Detected direct file URL; downloading with plain HTTP (bypassing yt-dlp).",
+              file=sys.stderr)
+        return _download_direct(url, output_dir, audio_only=audio_only)
+
     _require_binary("yt-dlp")
     os.makedirs(output_dir, exist_ok=True)
 

@@ -27,7 +27,7 @@ import sys
 import cv2
 import numpy as np
 
-from aspectshift.downloader import probe_video, InvalidVideoError, MissingDependencyError, _require_binary
+from aspectshift.downloader import probe_video, InvalidVideoError, MissingDependencyError, _require_binary, load_face_cascade
 
 TARGET_W = 1080
 TARGET_H = 1920
@@ -114,7 +114,7 @@ def _detect_focus_center_x(input_path: str, sample_count: int = 12) -> float:
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1
 
-    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    face_cascade = load_face_cascade()  # None if this OpenCV build lacks cascade support
 
     sample_indices = np.linspace(0, max(frame_count - 1, 0), num=sample_count, dtype=int)
     weighted_x_sum = 0.0
@@ -129,7 +129,10 @@ def _detect_focus_center_x(input_path: str, sample_count: int = 12) -> float:
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
+        if face_cascade is not None:
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
+        else:
+            faces = []
         if len(faces) > 0:
             # Weight by face area - bigger/closer faces matter more.
             for (x, y, w, h) in faces:

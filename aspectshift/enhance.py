@@ -24,7 +24,7 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
-from aspectshift.downloader import _require_binary, probe_video
+from aspectshift.downloader import _require_binary, load_face_cascade, probe_video
 
 COLOR_GRADE_PRESETS = {
     # eq: brightness/contrast/saturation/gamma tuning; curves: channel-specific
@@ -137,7 +137,20 @@ def background_blur(input_path: str, output_path: str, blur_strength: int = 35) 
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    cascade = load_face_cascade()
+    if cascade is None:
+        # No face detection available on this OpenCV build: skip the blur
+        # entirely (re-encode unchanged) instead of crashing the whole job.
+        cap.release()
+        print("[enhance] Face detection unavailable - skipping background blur.", file=sys.stderr)
+        cmd = [
+            "ffmpeg", "-y", "-i", input_path,
+            "-c:v", "libx264", "-crf", "14", "-preset", "slow", "-pix_fmt", "yuv420p",
+            "-c:a", "copy", output_path,
+        ]
+        subprocess.run(cmd, capture_output=True, text=True)
+        return output_path
+
     silent_path = output_path + ".silent.mp4"
     writer = cv2.VideoWriter(silent_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
     if not writer.isOpened():
