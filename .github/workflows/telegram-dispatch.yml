@@ -71,6 +71,13 @@ jobs:
           TARGET_LUFS: ${{ github.event.client_payload.options.target_lufs }}
           TARGET_TP: ${{ github.event.client_payload.options.target_tp }}
           TARGET_LRA: ${{ github.event.client_payload.options.target_lra }}
+          LOFI_AUDIO: ${{ github.event.client_payload.options.lofi_audio }}
+          LOFI_HOURS: ${{ github.event.client_payload.options.lofi_hours }}
+          LOFI_CRF: ${{ github.event.client_payload.options.lofi_crf }}
+          LOFI_PRESET: ${{ github.event.client_payload.options.lofi_preset }}
+          LOFI_NOISE: ${{ github.event.client_payload.options.lofi_noise }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
         run: python bot/run_job.py
 
       - name: Upload job output as a build artifact too (backup if Telegram upload failed)
