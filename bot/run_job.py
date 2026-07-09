@@ -30,6 +30,11 @@ Expected environment variables:
     TARGET_LUFS    - loudnorm only, target integrated loudness in LUFS
     TARGET_TP      - loudnorm only, target true peak in dBTP
     TARGET_LRA     - loudnorm only, target loudness range in LU
+    LOFI_AUDIO     - lofiloop only, Google Drive/direct URL/path to long audio
+    LOFI_HOURS     - lofiloop only, target render duration in hours
+    LOFI_CRF       - lofiloop only, H.264 CRF quality (default 18)
+    LOFI_PRESET    - lofiloop only, x264 preset (default veryfast)
+    LOFI_NOISE     - lofiloop only, invisible per-frame noise strength (default 1)
 """
 
 from __future__ import annotations
@@ -257,7 +262,82 @@ def run_autochapters(chat_id: str) -> None:
     _send_output_videos(chat_id, output_dir, "AutoChapters")
 
 
+def run_lofiloop(chat_id: str) -> None:
+    """
+    Render a seamless, monetization-safe lofi video by looping a short clip
+    over a long audio track, then deliver it:
+      1. If <= 2GB and Pyrogram is available -> send straight into the chat via
+         MTProto (raises the 20/50MB Bot API cap to 2GB using the app API id/hash).
+      2. Otherwise -> upload to a free, key-less host and return the direct link.
+    """
+    source_type = _env("SOURCE_TYPE", required=True)  # short loop video source
+    source_value = _env("SOURCE_VALUE", required=True)
+    audio_source = _env("LOFI_AUDIO", required=True)
+    hours = _env("LOFI_HOURS", "2")
+    crf = _env("LOFI_CRF", "18")
+    preset = _env("LOFI_PRESET", "veryfast")
+    noise = _env("LOFI_NOISE", "1")
+    output_dir = "./job_output"
+    os.makedirs(output_dir, exist_ok=True)
+
+    send_message(chat_id, f"🎧 LofiLoop: rendering a {hours}h seamless, monetization-safe video. "
+                          f"This can take a while for long durations — I'll ping you when it's ready.")
+
+    cmd = [
+        sys.executable, "lofiloop/main.py",
+        "--video", source_value,
+        "--audio", audio_source,
+        "--hours", hours,
+        "--crf", crf,
+        "--preset", preset,
+        "--noise", noise,
+        "--output-dir", output_dir,
+    ]
+    _run(cmd)
+
+    # Read the manifest the CLI wrote (contains the hosted download link, if any).
+    manifest = {}
+    manifest_path = os.path.join(output_dir, "lofi_manifest.json")
+    if os.path.isfile(manifest_path):
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+
+    rendered = manifest.get("path")
+    if not rendered or not os.path.isfile(rendered):
+        mp4s = [f for f in sorted(os.listdir(output_dir)) if f.endswith(".mp4")]
+        rendered = os.path.join(output_dir, mp4s[0]) if mp4s else None
+    if not rendered or not os.path.isfile(rendered):
+        raise RuntimeError("LofiLoop render produced no output file.")
+
+    size_mb = os.path.getsize(rendered) / 1024 / 1024
+    hosted_url = manifest.get("download_url")
+    signature = manifest.get("signature", "")
+    caption = (f"✅ LofiLoop {hours}h ready!\n"
+               f"📦 {size_mb:.0f} MB • CRF {crf} • unique fingerprint 🔒\n"
+               f"🆔 {signature[:16]}")
+
+    # --- Delivery path 1: direct MTProto send (up to 2GB) ------------------
+    delivered = False
+    if size_mb <= 2048:
+        try:
+            from bot.mtproto_transfer import send_large_file, mtproto_available
+            if mtproto_available():
+                send_message(chat_id, f"📤 Uploading {size_mb:.0f} MB straight to this chat (up to 2GB supported)...")
+                delivered = send_large_file(chat_id, rendered, caption=caption, as_video=True)
+        except Exception as e:
+            print(f"[run_job] MTProto delivery error: {e}")
+
+    # --- Delivery path 2: hosted download link -----------------------------
+    if not delivered:
+        if hosted_url:
+            send_message(chat_id, f"{caption}\n\n⬇️ Direct download ({manifest.get('upload_host','host')}):\n{hosted_url}")
+        else:
+            # Last resort: try the plain Bot API (works only if <50MB).
+            send_video(chat_id, rendered, caption=caption)
+
+
 TOOL_RUNNERS = {
+    "lofiloop": run_lofiloop,
     "aspectshift": run_aspectshift,
     "clipharvest": run_clipharvest,
     "watermarkwipe": run_watermarkwipe,
