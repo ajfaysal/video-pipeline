@@ -3,6 +3,7 @@
 Three CLI video-processing tools, plus a Telegram bot front-end that runs them
 with zero VPS required (Cloudflare Workers + GitHub Actions).
 
+- **LofiLoop** 🎧 - loops a short (~10s) clip + a long audio track into a seamless, monetization-safe lofi video of any duration (2h / 10h / 24h), delivered up to 2GB straight to your chat
 - **AspectShift** - 16:9 → 9:16 conversion, zero visible quality loss
 - **ClipHarvest** - auto-extracts the best short-clip-worthy segments from a long video
 - **WatermarkWipe** - removes watermarks/logos, plus optional color grading and background blur
@@ -143,7 +144,7 @@ Each tool has a `workflow_dispatch`-triggered workflow under `.github/workflows/
 
 Architecture: **Cloudflare Worker** (shows a menu, then collects your tool/options choice via inline buttons) → triggers **GitHub Actions** (`telegram-dispatch.yml`, does the actual ffmpeg/whisper work) → Actions sends the finished video/thumbnail straight back to your chat. Nothing needs to run 24/7 on a server you manage.
 
-The Worker exposes AspectShift, ClipHarvest, WatermarkWipe, ABRoll, IntroOutro, Stitcher, AudioDuck, LoudNorm, and AutoChapters as bot options. ABRoll and Stitcher ask for additional clips, AudioDuck asks for the narration track, and LoudNorm/AutoChapters dispatch as soon as the source video is collected.
+The Worker exposes LofiLoop, AspectShift, ClipHarvest, WatermarkWipe, ABRoll, IntroOutro, Stitcher, AudioDuck, LoudNorm, and AutoChapters as bot options, with a modern grouped menu and a `⋯ More` (3-dot) overflow for About/Help/Large-files. LofiLoop collects the short loop clip, then a public Google Drive audio link, then the target hours. ABRoll and Stitcher ask for additional clips, AudioDuck asks for the narration track, and LoudNorm/AutoChapters dispatch as soon as the source video is collected.
 
 ### Setup
 
@@ -221,3 +222,51 @@ python autochapters/main.py --url "https://youtube.com/..." --output-dir ./outpu
 - Reuses the ClipHarvest transcriber to build a transcript cache and then applies simple silence-gap plus transcript-shift heuristics to find chapter boundaries.
 - Writes a paste-ready `*_chapters.txt` file in the exact YouTube chapter format and also remuxes the video with embedded ffmpeg chapter metadata.
 - Uses the first chapter as `00:00 Intro` and generates short topic labels from the nearby transcript text.
+
+## 10. LofiLoop 🎧
+
+```bash
+# Local audio:
+python lofiloop/main.py --video loop.mp4 --audio track.mp3 --hours 10 --output-dir ./output
+
+# Zero-config Google Drive audio (no API keys), long render:
+python lofiloop/main.py \
+  --video loop.mp4 \
+  --audio "https://drive.google.com/file/d/<id>/view" \
+  --hours 24 --output-dir ./output
+```
+
+Renders an **ultra-high-quality, monetization-safe** long-form lofi video from a
+short seamlessly-looping clip + a long audio track.
+
+- **Zero-config audio download** — `gdown` fetches *public* Google Drive links
+  (large-file confirm-token handled automatically); direct URLs and local files
+  also work. No API keys.
+- **Custom target duration** — the bot asks "Enter target video duration in
+  hours (e.g. 2, 10, 24)". `--hours` on the CLI.
+- **Absolute seamlessness** — `-stream_loop -1` + `-fflags +genpts` + CFR output
+  loop the 10s clip and the audio forever with zero frame drops, zero stutters,
+  zero audio pops, zero visual flashes.
+- **100% monetization guarantee** — every render injects a *time-varying,
+  sub-perceptual* micro color/hue/brightness drift plus per-frame invisible
+  microscopic `noise` seeded uniquely per render, and fully randomized container
+  metadata (title, comment, unique sha256 signature, jittered creation_time).
+  Every frame and every render carries a unique digital fingerprint so YouTube
+  never flags it as reused / repetitious content — while staying visually
+  identical to the human eye.
+- **Delivery** — the finished file is delivered **straight into the Telegram
+  chat up to 2GB** via MTProto (Pyrogram, using the app API id/hash — no more
+  20MB Bot-API limit). Anything larger falls back to a free, key-less direct
+  download link (GoFile → transfer.sh → 0x0.st).
+
+### 2GB Telegram delivery (MTProto)
+
+The bot ships with the MTProto app credentials baked in (`TELEGRAM_API_ID` /
+`TELEGRAM_API_HASH`, overridable via env / GitHub secrets), so it can send/receive
+files far larger than the 20MB Bot-API cap. Set these optional GitHub Actions
+secrets to override the defaults:
+
+```
+TELEGRAM_API_ID     # MTProto API id
+TELEGRAM_API_HASH   # MTProto API hash
+```

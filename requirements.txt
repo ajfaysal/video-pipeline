@@ -13,3 +13,8 @@ librosa>=0.10.2
 soundfile>=0.12.1
 
 # WatermarkWipe has no additional dependencies beyond the shared set above.
+
+# LofiLoop (zero-config Google Drive download + 2GB Telegram delivery)
+gdown>=5.1.0
+pyrogram>=2.0.106
+tgcrypto>=1.2.5

@@ -38,7 +38,7 @@ async function tg(env, method, payload) {
 }
 
 function sendMessage(env, chatId, text, replyMarkup) {
-  const payload = { chat_id: chatId, text };
+  const payload = { chat_id: chatId, text, parse_mode: "Markdown", disable_web_page_preview: true };
   if (replyMarkup) payload.reply_markup = replyMarkup;
   return tg(env, "sendMessage", payload);
 }
@@ -87,6 +87,7 @@ async function dispatchJob(env, payload) {
 }
 
 const TOOL_LABELS = {
+  lofiloop: "🎧 LofiLoop",
   aspectshift: "🔳 AspectShift",
   clipharvest: "✂️ ClipHarvest",
   watermarkwipe: "🧽 WatermarkWipe",
@@ -99,6 +100,12 @@ const TOOL_LABELS = {
 };
 
 const TOOL_GROUPS = [
+  {
+    title: "🔥 Viral Studio",
+    items: [
+      { tool: "lofiloop", description: "loop a 10s clip + long audio into a monetization-safe 2h/10h/24h video" },
+    ],
+  },
   {
     title: "🎬 Video Format",
     items: [
@@ -132,29 +139,91 @@ const TOOL_GROUPS = [
 
 function menuText() {
   return [
-    "Pick a tool first, then I’ll ask you for the video or link:",
+    "🎛️ *Creator Studio Bot* — the most powerful video toolkit on Telegram.",
+    "",
+    "Pick a tool below, then I’ll walk you through it:",
     "",
     ...TOOL_GROUPS.flatMap(group => [
       group.title,
-      ...group.items.map(item => `• ${TOOL_LABELS[item.tool]} - ${item.description}`),
+      ...group.items.map(item => `  • ${TOOL_LABELS[item.tool]} — ${item.description}`),
       "",
     ]),
-    "Direct uploads over Telegram are limited to 20MB. For larger files, send a link instead.",
+    "📤 Send links for big files. Rendered lofi videos up to *2GB* are delivered straight to your chat.",
+    "Tap ⋯ for more options.",
   ].join("\n");
 }
 
+// Featured tool sits on top; everything else is grouped. A trailing "⋯ More"
+// overflow row exposes help / about / large-file info in a modern 3-dot menu.
 function menuKeyboard() {
   return inlineKeyboard([
-    [{ text: TOOL_LABELS.aspectshift, data: "tool:aspectshift" }],
-    [{ text: TOOL_LABELS.clipharvest, data: "tool:clipharvest" }],
-    [{ text: TOOL_LABELS.watermarkwipe, data: "tool:watermarkwipe" }],
-    [{ text: TOOL_LABELS.introoutro, data: "tool:introoutro" }],
-    [{ text: TOOL_LABELS.abroll, data: "tool:abroll" }],
-    [{ text: TOOL_LABELS.stitcher, data: "tool:stitcher" }],
-    [{ text: TOOL_LABELS.audioduck, data: "tool:audioduck" }],
-    [{ text: TOOL_LABELS.loudnorm, data: "tool:loudnorm" }],
+    [{ text: "🎧 LofiLoop — Viral Loop Studio 🔥", data: "tool:lofiloop" }],
+    [{ text: TOOL_LABELS.aspectshift, data: "tool:aspectshift" },
+     { text: TOOL_LABELS.clipharvest, data: "tool:clipharvest" }],
+    [{ text: TOOL_LABELS.watermarkwipe, data: "tool:watermarkwipe" },
+     { text: TOOL_LABELS.introoutro, data: "tool:introoutro" }],
+    [{ text: TOOL_LABELS.abroll, data: "tool:abroll" },
+     { text: TOOL_LABELS.stitcher, data: "tool:stitcher" }],
+    [{ text: TOOL_LABELS.audioduck, data: "tool:audioduck" },
+     { text: TOOL_LABELS.loudnorm, data: "tool:loudnorm" }],
     [{ text: TOOL_LABELS.autochapters, data: "tool:autochapters" }],
+    [{ text: "⋯ More", data: "overflow" }],
   ]);
+}
+
+// The 3-dot overflow menu.
+function overflowText() {
+  return [
+    "⋯ *More options*",
+    "",
+    "ℹ️ About — what this studio can do",
+    "❓ Help — how each tool works",
+    "🚀 Large files — up to 2GB delivered in-chat via MTProto",
+    "",
+    "Pick one:",
+  ].join("\n");
+}
+
+function overflowKeyboard() {
+  return inlineKeyboard([
+    [{ text: "ℹ️ About", data: "info:about" }, { text: "❓ Help", data: "info:help" }],
+    [{ text: "🚀 Large files (2GB)", data: "info:largefiles" }],
+    [{ text: "🏠 Back to Menu", data: "menu" }],
+  ]);
+}
+
+function infoText(topic) {
+  if (topic === "about") {
+    return [
+      "ℹ️ *About Creator Studio Bot*",
+      "",
+      "A studio-grade FFmpeg pipeline that runs on GitHub Actions and delivers",
+      "results straight to Telegram. The flagship 🎧 *LofiLoop* renders",
+      "seamless, monetization-safe long-form lofi videos (2h / 10h / 24h) with a",
+      "unique per-frame digital fingerprint so YouTube never flags them as",
+      "reused content.",
+    ].join("\n");
+  }
+  if (topic === "help") {
+    return [
+      "❓ *Help*",
+      "",
+      "1. Tap a tool.",
+      "2. Send the video/audio *file* or a *direct link*.",
+      "3. Answer the quick questions (mode, duration, …).",
+      "4. I dispatch the render and message you when it’s done.",
+      "",
+      "For 🎧 LofiLoop: send the short 10s loop clip, then paste a public Google",
+      "Drive link for the long audio, then pick the target hours.",
+    ].join("\n");
+  }
+  return [
+    "🚀 *Large files*",
+    "",
+    "Rendered lofi videos are delivered *directly in this chat* up to *2GB* using",
+    "MTProto (no more 20MB limit). Anything larger falls back to a free direct",
+    "download link (GoFile / transfer.sh) — no signup, no API keys.",
+  ].join("\n");
 }
 
 function withBackButton(rows) {
@@ -163,6 +232,8 @@ function withBackButton(rows) {
 
 function sourceInstructions(tool) {
   switch (tool) {
+    case "lofiloop":
+      return "🎧 *LofiLoop* — Step 1 of 3\n\nSend your short *seamlessly-looping* clip (a ~10s .mp4 works best) as a file or a direct link.";
     case "aspectshift":
       return "Send the video you want converted to vertical 9:16.";
     case "clipharvest":
@@ -223,6 +294,16 @@ async function sourceFromMessage(env, message, allowAudio = false) {
 }
 
 async function continueAfterSource(env, chatId, state) {
+  if (state.tool === "lofiloop") {
+    state.step = "collect_lofi_audio";
+    await setState(env, chatId, state);
+    await sendMessage(env, chatId,
+      "🎧 *LofiLoop* — Step 2 of 3\n\nNow paste a *public Google Drive link* to your long audio file " +
+      "(set to “Anyone with the link”). A direct audio URL also works. No API keys needed — I fetch it automatically.",
+      withBackButton([]));
+    return;
+  }
+
   if (state.tool === "aspectshift") {
     state.step = "choose_mode_aspectshift";
     await setState(env, chatId, state);
@@ -306,6 +387,55 @@ async function handleMessage(env, message) {
     return;
   }
 
+  // LofiLoop step 2: collect the long audio (Google Drive / direct URL / file).
+  if (state && state.step === "collect_lofi_audio") {
+    try {
+      let audioUrl = null;
+      if (looksLikeUrl(text)) {
+        audioUrl = text;
+      } else {
+        audioUrl = await sourceFromMessage(env, message, true);
+      }
+      if (!audioUrl) {
+        await sendMessage(env, chatId,
+          "Paste a *public Google Drive link* or a direct audio URL (or send the audio file).",
+          withBackButton([]));
+        return;
+      }
+      state.lofi_audio = audioUrl;
+      state.step = "choose_lofi_hours";
+      await setState(env, chatId, state);
+      await sendMessage(env, chatId,
+        "🎧 *LofiLoop* — Step 3 of 3\n\n⏱️ *Enter target video duration in hours* (e.g. 2, 10, 24).\n\n" +
+        "Tap a preset below or just type a number:",
+        withBackButton([
+          [{ text: "1h", data: "hours:1" }, { text: "2h", data: "hours:2" }, { text: "3h", data: "hours:3" }],
+          [{ text: "6h", data: "hours:6" }, { text: "10h", data: "hours:10" }, { text: "24h", data: "hours:24" }],
+        ]));
+      return;
+    } catch (e) {
+      await sendMessage(env, chatId, `❌ ${e.message}`, withBackButton([]));
+      return;
+    }
+  }
+
+  // LofiLoop step 3: user typed a custom number of hours.
+  if (state && state.step === "choose_lofi_hours") {
+    const hours = parseFloat(text);
+    if (!isNaN(hours) && hours > 0 && hours <= 48) {
+      state.lofi_hours = String(hours);
+      await dispatchAndFinish(env, chatId, state);
+      return;
+    }
+    await sendMessage(env, chatId,
+      "Please send a number of hours between 0 and 48 (e.g. 2, 10, 24), or tap a preset.",
+      withBackButton([
+        [{ text: "1h", data: "hours:1" }, { text: "2h", data: "hours:2" }, { text: "3h", data: "hours:3" }],
+        [{ text: "6h", data: "hours:6" }, { text: "10h", data: "hours:10" }, { text: "24h", data: "hours:24" }],
+      ]));
+    return;
+  }
+
   if (state && ["collect_brolls", "collect_stitch_clips", "collect_voiceover"].includes(state.step)) {
     if (text === "/done") {
       if (state.step === "collect_brolls" && (!state.extra_sources || state.extra_sources.length < 1)) {
@@ -375,6 +505,16 @@ async function handleCallback(env, callbackQuery) {
     return;
   }
 
+  if (kind === "overflow") {
+    await sendMessage(env, chatId, overflowText(), overflowKeyboard());
+    return;
+  }
+
+  if (kind === "info") {
+    await sendMessage(env, chatId, infoText(value), overflowKeyboard());
+    return;
+  }
+
   if (kind === "tool") {
     await setState(env, chatId, { tool: value });
     await promptForSource(env, chatId, value);
@@ -383,6 +523,12 @@ async function handleCallback(env, callbackQuery) {
 
   if (!state) {
     await answerCallback(env, callbackQuery.id, "This step expired, please open the menu again.");
+    return;
+  }
+
+  if (kind === "hours" && state.step === "choose_lofi_hours") {
+    state.lofi_hours = value;
+    await dispatchAndFinish(env, chatId, state);
     return;
   }
 
@@ -459,6 +605,11 @@ async function dispatchAndFinish(env, chatId, state) {
       target_lufs: state.target_lufs || "-14",
       target_tp: state.target_tp || "-1.5",
       target_lra: state.target_lra || "11",
+      lofi_audio: state.lofi_audio || "",
+      lofi_hours: state.lofi_hours || "2",
+      lofi_crf: state.lofi_crf || "18",
+      lofi_preset: state.lofi_preset || "veryfast",
+      lofi_noise: state.lofi_noise || "1",
     },
   });
 
