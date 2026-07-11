@@ -97,7 +97,18 @@ const TOOL_LABELS = {
   audioduck: "🎙️ AudioDuck",
   loudnorm: "📶 LoudNorm",
   autochapters: "📊 AutoChapters",
+  photostudio: "📸 PhotoStudio",
 };
+
+// Photo effect presets - must match photostudio/effects.py PRESETS keys.
+const PHOTO_EFFECTS = [
+  [{ text: "📷 DSLR Look", data: "fx:dslr" }, { text: "🎬 Cinematic", data: "fx:cinematic" }],
+  [{ text: "🌅 HDR", data: "fx:hdr" }, { text: "👤 Portrait Bokeh", data: "fx:portrait" }],
+  [{ text: "🌈 Vivid", data: "fx:vivid" }, { text: "🌫️ Matte", data: "fx:matte" }],
+  [{ text: "⚪ B&W", data: "fx:bw" }, { text: "🏝️ Teal & Orange", data: "fx:teal_orange" }],
+  [{ text: "🌇 Golden Hour", data: "fx:golden_hour" }, { text: "🎞️ Film Grain", data: "fx:film" }],
+  [{ text: "⏭️ No effect (upscale only)", data: "fx:none" }],
+];
 
 const TOOL_GROUPS = [
   {
@@ -127,6 +138,7 @@ const TOOL_GROUPS = [
     title: "🎨 Enhancement",
     items: [
       { tool: "watermarkwipe", description: "remove logos and watermarks" },
+      { tool: "photostudio", description: "upscale photos up to 16K Ultra HD + pro color effects (DSLR, HDR, Portrait…)" },
     ],
   },
   {
@@ -166,7 +178,8 @@ function menuKeyboard() {
      { text: TOOL_LABELS.stitcher, data: "tool:stitcher" }],
     [{ text: TOOL_LABELS.audioduck, data: "tool:audioduck" },
      { text: TOOL_LABELS.loudnorm, data: "tool:loudnorm" }],
-    [{ text: TOOL_LABELS.autochapters, data: "tool:autochapters" }],
+    [{ text: TOOL_LABELS.photostudio, data: "tool:photostudio" },
+     { text: TOOL_LABELS.autochapters, data: "tool:autochapters" }],
     [{ text: "⋯ More", data: "overflow" }],
   ]);
 }
@@ -234,6 +247,8 @@ function sourceInstructions(tool) {
   switch (tool) {
     case "lofiloop":
       return "🎧 *LofiLoop* — Step 1 of 3\n\nSend your short *seamlessly-looping* clip (a ~10s .mp4 works best) as a file or a direct link.";
+    case "photostudio":
+      return "📸 *PhotoStudio* — Step 1 of 3\n\nSend me the photo you want to enhance.\n\n💡 For best quality send it *as a file/document* (not a compressed photo), or paste a direct image / Google Drive link.";
     case "aspectshift":
       return "Send the video you want converted to vertical 9:16.";
     case "clipharvest":
@@ -271,13 +286,17 @@ async function promptForSource(env, chatId, tool) {
   await sendMessage(env, chatId, sourceInstructions(tool), withBackButton([]));
 }
 
-async function sourceFromMessage(env, message, allowAudio = false) {
+async function sourceFromMessage(env, message, allowAudio = false, allowPhoto = false) {
   const text = (message.text || "").trim();
   if (looksLikeUrl(text)) {
     return text;
   }
 
-  const file = message.video || message.document || (allowAudio ? message.audio : null);
+  // Telegram sends photos as an array of progressively larger sizes; take the largest.
+  const photo = allowPhoto && Array.isArray(message.photo) && message.photo.length
+    ? message.photo[message.photo.length - 1]
+    : null;
+  const file = message.video || message.document || photo || (allowAudio ? message.audio : null);
   if (!file) return null;
 
   if (file.file_size && file.file_size > 20 * 1024 * 1024) {
@@ -301,6 +320,20 @@ async function continueAfterSource(env, chatId, state) {
       "🎧 *LofiLoop* — Step 2 of 3\n\nNow paste a *public Google Drive link* to your long audio file " +
       "(set to “Anyone with the link”). A direct audio URL also works. No API keys needed — I fetch it automatically.",
       withBackButton([]));
+    return;
+  }
+
+  if (state.tool === "photostudio") {
+    state.step = "choose_resolution";
+    await setState(env, chatId, state);
+    await sendMessage(env, chatId,
+      "📸 *Step 2 of 3* — Choose your upscale resolution:\n\n" +
+      "💡 16K = 15360px long edge, true Ultra HD print quality. Higher resolutions take longer.",
+      withBackButton([
+        [{ text: "🖥️ 2K (2048px)", data: "res:2k" }, { text: "📺 4K (4096px)", data: "res:4k" }],
+        [{ text: "🎥 8K (8192px)", data: "res:8k" }, { text: "🚀 16K Ultra HD", data: "res:16k" }],
+        [{ text: "⏭️ Keep original size (effect only)", data: "res:none" }],
+      ]));
     return;
   }
 
@@ -363,7 +396,8 @@ async function continueAfterSource(env, chatId, state) {
 async function handleSourceMessage(env, chatId, state, message) {
   try {
     const allowAudio = state.tool === "audioduck" && state.step === "collect_voiceover";
-    const sourceValue = await sourceFromMessage(env, message, allowAudio);
+    const allowPhoto = state.tool === "photostudio";
+    const sourceValue = await sourceFromMessage(env, message, allowAudio, allowPhoto);
     if (!sourceValue) {
       await sendMessage(env, chatId, sourceInstructions(state.tool), withBackButton([]));
       return;
@@ -538,6 +572,29 @@ async function handleCallback(env, callbackQuery) {
     return;
   }
 
+  if (kind === "res" && state.step === "choose_resolution") {
+    state.resolution = value === "none" ? "" : value;
+    state.step = "choose_effect";
+    await setState(env, chatId, state);
+    await sendMessage(env, chatId,
+      "🎨 *Step 3 of 3* — Add a professional color effect?\n\n" +
+      "📷 *DSLR Look* is our signature: full-frame camera depth, rich tones and a subtle optical vignette.",
+      withBackButton(PHOTO_EFFECTS));
+    return;
+  }
+
+  if (kind === "fx" && state.step === "choose_effect") {
+    state.effect = value === "none" ? "" : value;
+    if (!state.resolution && !state.effect) {
+      await sendMessage(env, chatId,
+        "⚠️ You skipped both the upscale *and* the effect — there’d be nothing to do! Pick at least one:",
+        withBackButton(PHOTO_EFFECTS));
+      return;
+    }
+    await dispatchAndFinish(env, chatId, state);
+    return;
+  }
+
   if (kind === "clips") {
     state.num_clips = value;
     state.min_duration = "20";
@@ -610,6 +667,8 @@ async function dispatchAndFinish(env, chatId, state) {
       lofi_crf: state.lofi_crf || "18",
       lofi_preset: state.lofi_preset || "veryfast",
       lofi_noise: state.lofi_noise || "1",
+      resolution: state.resolution || "",
+      effect: state.effect || "",
     },
   });
 

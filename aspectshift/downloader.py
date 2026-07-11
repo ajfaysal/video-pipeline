@@ -37,6 +37,7 @@ import requests
 
 _VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".mpg", ".mpeg", ".ts", ".3gp", ".flv", ".wmv")
 _AUDIO_EXTS = (".mp3", ".m4a", ".aac", ".wav", ".ogg", ".oga", ".opus", ".flac", ".wma", ".aiff")
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif", ".heic")
 _GDRIVE_ID_RE = re.compile(
     r"drive\.google\.com/(?:file/d/([-\w]{20,})|open\?id=([-\w]{20,})|uc\?(?:[^#]*&)?id=([-\w]{20,}))"
 )
@@ -53,6 +54,10 @@ class InvalidVideoError(RuntimeError):
 
 class InvalidAudioError(RuntimeError):
     """Raised when a local file is missing, unreadable, or not audio-only."""
+
+
+class InvalidImageError(RuntimeError):
+    """Raised when a local file is missing, unreadable, or not a valid image."""
 
 
 class MissingDependencyError(RuntimeError):
@@ -176,11 +181,11 @@ def _ext_from_url_or_headers(url: str, content_type: str | None, content_disposi
         m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', content_disposition)
         if m:
             ext = os.path.splitext(m.group(1).strip())[1].lower()
-            if ext in _VIDEO_EXTS or ext in _AUDIO_EXTS:
+            if ext in _VIDEO_EXTS or ext in _AUDIO_EXTS or ext in _IMAGE_EXTS:
                 return ext
     # 2. Extension in the URL path.
     path_ext = os.path.splitext(urlparse(url).path)[1].lower()
-    if path_ext in _VIDEO_EXTS or path_ext in _AUDIO_EXTS:
+    if path_ext in _VIDEO_EXTS or path_ext in _AUDIO_EXTS or path_ext in _IMAGE_EXTS:
         return path_ext
     # 3. Content-Type mapping.
     if content_type:
@@ -191,6 +196,8 @@ def _ext_from_url_or_headers(url: str, content_type: str | None, content_disposi
             "audio/mpeg": ".mp3", "audio/mp4": ".m4a", "audio/aac": ".aac",
             "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/ogg": ".ogg",
             "audio/opus": ".opus", "audio/flac": ".flac",
+            "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
+            "image/bmp": ".bmp", "image/tiff": ".tiff",
         }
         if ct in ct_map:
             return ct_map[ct]
@@ -212,7 +219,7 @@ def _is_direct_file_url(url: str) -> bool:
         return True
 
     ext = os.path.splitext(parsed.path)[1].lower()
-    if ext in _VIDEO_EXTS or ext in _AUDIO_EXTS:
+    if ext in _VIDEO_EXTS or ext in _AUDIO_EXTS or ext in _IMAGE_EXTS:
         return True
 
     # Last resort: cheap HEAD request to sniff the content-type. Failures here
@@ -220,7 +227,7 @@ def _is_direct_file_url(url: str) -> bool:
     try:
         resp = requests.head(url, allow_redirects=True, timeout=15)
         ct = resp.headers.get("Content-Type", "").split(";")[0].strip().lower()
-        return ct.startswith("video/") or ct.startswith("audio/")
+        return ct.startswith("video/") or ct.startswith("audio/") or ct.startswith("image/")
     except requests.RequestException:
         return False
 
@@ -432,6 +439,44 @@ def resolve_audio_input(input_path: str | None = None, url: str | None = None, o
         f"({info['duration']:.1f}s, sample_rate={info['sample_rate']}, channels={info['channels']})",
         file=sys.stderr,
     )
+    return local_path
+
+
+def resolve_image_input(input_path: str | None = None, url: str | None = None, output_dir: str = ".") -> str:
+    """
+    Resolve either a local image file or a URL into a validated local image path.
+    Exactly one of input_path / url must be provided.
+    """
+    if bool(input_path) == bool(url):
+        raise ValueError("Provide exactly one of --input (local path) or --url, not both/neither.")
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    if url:
+        print(f"[downloader] Downloading source image from URL: {url}", file=sys.stderr)
+        gdrive_id = _extract_gdrive_file_id(url)
+        if gdrive_id:
+            local_path = _download_gdrive(gdrive_id, output_dir)
+        else:
+            local_path = _download_direct(url, output_dir)
+    else:
+        if not os.path.isfile(input_path):
+            raise InvalidImageError(f"Input file not found: {input_path}")
+        local_path = os.path.abspath(input_path)
+
+    # Validate: must be decodable as an image.
+    try:
+        import cv2
+        img = cv2.imread(local_path, cv2.IMREAD_COLOR)
+    except ImportError:
+        raise MissingDependencyError("opencv-python is required to validate/process images.")
+    if img is None:
+        raise InvalidImageError(
+            f"'{local_path}' could not be decoded as an image. "
+            f"Supported formats: {', '.join(_IMAGE_EXTS)}"
+        )
+    h, w = img.shape[:2]
+    print(f"[downloader] Resolved image input: {local_path} ({w}x{h})", file=sys.stderr)
     return local_path
 
 

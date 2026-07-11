@@ -35,6 +35,13 @@ Expected environment variables:
     LOFI_CRF       - lofiloop only, H.264 CRF quality (default 18)
     LOFI_PRESET    - lofiloop only, x264 preset (default veryfast)
     LOFI_NOISE     - lofiloop only, invisible per-frame noise strength (default 1)
+    RESOLUTION     - photostudio only, "2k"|"4k"|"8k"|"16k" upscale target
+    EFFECT         - photostudio only, color effect preset (e.g. "dslr")
+
+Options not present as env vars are read from the dispatch event payload
+(GITHUB_EVENT_PATH) automatically - see _load_payload(). This lets new
+options work without editing the workflow file (which this bot's GitHub
+token has no permission to modify).
 """
 
 from __future__ import annotations
@@ -52,11 +59,33 @@ if _REPO_ROOT not in sys.path:
 from bot.telegram_notify import send_message, send_video, send_photo, send_document
 
 
+def _load_payload() -> dict:
+    """Load the full repository_dispatch client_payload from GITHUB_EVENT_PATH."""
+    event_path = os.environ.get("GITHUB_EVENT_PATH", "")
+    if not event_path or not os.path.isfile(event_path):
+        return {}
+    try:
+        with open(event_path, encoding="utf-8") as fh:
+            event = json.load(fh)
+        return event.get("client_payload", {}) or {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+_PAYLOAD = _load_payload()
+_PAYLOAD_OPTIONS = _PAYLOAD.get("options", {}) or {}
+
+
 def _env(name: str, default: str | None = None, required: bool = False) -> str:
-    val = os.environ.get(name, default)
+    val = os.environ.get(name)
+    if not val:
+        key = name.lower()
+        val = _PAYLOAD_OPTIONS.get(key) or _PAYLOAD.get(key)
+    if val is None or val == "":
+        val = default
     if required and not val:
         raise RuntimeError(f"Missing required environment variable: {name}")
-    return val
+    return str(val) if val is not None else val
 
 
 def _run(cmd: list[str]) -> None:
@@ -249,6 +278,33 @@ def run_loudnorm(chat_id: str) -> None:
     _send_output_videos(chat_id, output_dir, f"LoudNorm ({target_lufs} LUFS)")
 
 
+def run_photostudio(chat_id: str) -> None:
+    source_type = _env("SOURCE_TYPE", required=True)
+    source_value = _env("SOURCE_VALUE", required=True)
+    resolution = _env("RESOLUTION", "")
+    effect = _env("EFFECT", "")
+    output_dir = "./job_output"
+
+    cmd = [sys.executable, "photostudio/main.py", "--output-dir", output_dir]
+    cmd += ["--url", source_value] if source_type == "url" else ["--input", source_value]
+    if resolution:
+        cmd += ["--resolution", resolution]
+    if effect:
+        cmd += ["--effect", effect]
+    _run(cmd)
+
+    # Send results as documents so Telegram doesn't recompress the pixels.
+    # The raw download is exactly "source_<8 hex>.<ext>"; anything else with
+    # an image extension is a processed output (e.g. source_ab12cd34_dslr_4k.png).
+    import re
+    is_raw_source = re.compile(r"^source_[0-9a-f]{8}\.[A-Za-z0-9]+$")
+    label = resolution.upper() if resolution else effect
+    for f in sorted(os.listdir(output_dir)):
+        if f.endswith((".png", ".jpg", ".jpeg")) and not is_raw_source.match(f):
+            send_document(chat_id, os.path.join(output_dir, f),
+                          caption=f"🖼️ PhotoStudio ({label}) done: {f}")
+
+
 def run_autochapters(chat_id: str) -> None:
     source_type = _env("SOURCE_TYPE", required=True)
     source_value = _env("SOURCE_VALUE", required=True)
@@ -347,6 +403,7 @@ TOOL_RUNNERS = {
     "audioduck": run_audioduck,
     "loudnorm": run_loudnorm,
     "autochapters": run_autochapters,
+    "photostudio": run_photostudio,
 }
 
 
