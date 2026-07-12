@@ -93,7 +93,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          grok agent run --headless --yes --prompt "$COMMAND" 2>&1 | tee agent_stdout.log
+          grok --single "$COMMAND" --permission-mode bypassPermissions --output-format plain 2>&1 | tee agent_stdout.log
         continue-on-error: true
 
       - name: Notify Telegram - agent could not complete the task
