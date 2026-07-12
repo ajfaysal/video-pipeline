@@ -18,3 +18,7 @@ soundfile>=0.12.1
 gdown>=5.1.0
 pyrogram>=2.0.106
 tgcrypto>=1.2.5
+
+# Headless coding agent (bot/agent_runner.py, triggered by /agent in Telegram)
+openai>=1.40.0
+pyyaml>=6.0.1

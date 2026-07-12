@@ -146,6 +146,26 @@ Architecture: **Cloudflare Worker** (shows a menu, then collects your tool/optio
 
 The Worker exposes LofiLoop, AspectShift, ClipHarvest, WatermarkWipe, ABRoll, IntroOutro, Stitcher, AudioDuck, LoudNorm, and AutoChapters as bot options, with a modern grouped menu and a `⋯ More` (3-dot) overflow for About/Help/Large-files. LofiLoop collects the short loop clip, then a public Google Drive audio link, then the target hours. ABRoll and Stitcher ask for additional clips, AudioDuck asks for the narration track, and LoudNorm/AutoChapters dispatch as soon as the source video is collected.
 
+### Two ways to serve the menu UI (no manual Cloudflare logins)
+
+**Solution B — Python poller (recommended, zero Cloudflare):**
+`bot/menu_bot.py` renders the *exact same* menu (featured 🎧 LofiLoop + ⋯ 3-dot overflow)
+straight from the Python backend using Telegram long-polling. No worker deploys ever needed.
+- Only required secret: `TELEGRAM_BOT_TOKEN` (repo → Settings → Secrets → Actions).
+- Start it: **Actions tab → "Telegram Menu Bot (Python poller)" → Run workflow**.
+  A cron relaunches it every 5 hours for continuous coverage.
+- On startup it calls `deleteWebhook`, so it instantly supersedes any stale
+  Cloudflare Worker webhook — the new Lofi menu appears on the next `/start`.
+- Optional secret `DISPATCH_PAT` (a PAT with `Actions: write`): jobs then run on
+  dedicated runners via `telegram-dispatch.yml` instead of inline.
+
+**Solution A — auto-deployed Cloudflare Worker:**
+`.github/workflows/deploy-worker.yml` redeploys the worker with Wrangler on every push
+to `main` that touches `cloudflare-worker/`. One-time setup: add repo secrets
+`CLOUDFLARE_API_TOKEN` (dashboard → My Profile → API Tokens → "Edit Cloudflare Workers"
+template) and `CLOUDFLARE_ACCOUNT_ID`. If the secrets are absent the workflow skips
+gracefully — use Solution B instead.
+
 ### Setup
 
 1. **Create the bot**: message [@BotFather](https://t.me/BotFather), `/newbot`, save the token.
@@ -172,6 +192,18 @@ The Worker exposes LofiLoop, AspectShift, ClipHarvest, WatermarkWipe, ABRoll, In
    ```
 5. Message your bot `/start` or `/menu`, pick a tool from the buttons, then send the video/link when prompted. Use `🏠 Back to Menu` any time to restart the flow without resending `/start`.
 
+### AI coding agent bridge: `/agent <task description>`
+
+Beyond the video tools, the bot exposes one operator-only command,
+`/agent <task description>`, that triggers this repo's headless coding
+agent (see `AGENTS.md` and `.agent/QUICKSTART.md`) to make a code change,
+open a PR, and report the PR link back to Telegram — e.g.
+`/agent add a --speed flag to aspectshift`. It's restricted to a single
+chat via the `AGENT_CHAT_ID` Worker secret (fails closed if unset — nobody
+else can trigger it) and requires a one-time manual setup step because
+GitHub Apps can't push workflow files; see `.agent/QUICKSTART.md` for the
+exact commands.
+
 **Limits to know:**
 - Directly-uploaded video files: Telegram bots can only fetch files ≤20MB. For anything bigger,
   send a link (YouTube etc.) instead.
@@ -196,9 +228,12 @@ audioduck/          main.py
 loudnorm/           main.py
 autochapters/       main.py
 bot/                telegram_notify.py, run_job.py   (used by telegram-dispatch.yml)
+                    agent_runner.py                  (headless coding agent, used by agent-task.yml)
 cloudflare-worker/  worker.js, wrangler.toml
+.agent/             skills/, hooks/, MEMORY.md, QUICKSTART.md — AI agent infrastructure
 .github/workflows/  aspectshift.yml, clipharvest.yml, watermarkwipe.yml, abroll.yml, introoutro.yml, stitcher.yml, audioduck.yml, loudnorm.yml, autochapters.yml, telegram-dispatch.yml
-requirements.txt    combined dependencies for all tools + the bot job runner
+docs/agent-task.yml headless agent trigger workflow — copy to .github/workflows/ (see .agent/QUICKSTART.md)
+requirements.txt    combined dependencies for all tools + the bot job runner + the agent runner
 ```
 
 ## 8. LoudNorm

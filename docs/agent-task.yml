@@ -1,0 +1,208 @@
+name: Agent Task (Headless)
+
+# Triggered via repository_dispatch from the Telegram bot's `/agent <task>`
+# command (cloudflare-worker/worker.js -> dispatchAgentTask()), or manually:
+#   POST /repos/{owner}/{repo}/dispatches
+#   { "event_type": "agent_command", "client_payload": { "command": "fix the bug in clipharvest scorer", "chat_id": "123456" } }
+#
+# Flow: checkout -> create unique branch -> run Grok CLI headlessly
+# (`grok agent run --headless --yes --prompt "$COMMAND"`) -> commit -> push
+# branch -> gh pr create -> Telegram "done" message with the PR link. Any
+# failure at any step sends the *specific* error to Telegram, never a generic
+# message.
+
+on:
+  repository_dispatch:
+    types: [agent_command]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        id: install_deps
+        run: pip install -r requirements.txt
+
+      - name: Notify Telegram - dependency install failed
+        if: failure() && steps.install_deps.outcome == 'failure'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ github.event.client_payload.chat_id }}
+        run: |
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MESSAGE="❌ Agent task failed: could not install Python dependencies (requirements.txt).%0ALog: ${RUN_URL}"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${CHAT_ID}" -d "text=${MESSAGE}" -d "disable_web_page_preview=true" || true
+
+      - name: Display task
+        run: |
+          echo "========================================="
+          echo "Agent command received:"
+          echo "${{ github.event.client_payload.command }}"
+          echo "========================================="
+          echo "Chat ID: ${{ github.event.client_payload.chat_id }}"
+          echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Create task branch
+        id: branch
+        run: |
+          git config user.name "agent-bot"
+          git config user.email "agent@users.noreply.github.com"
+          SLUG=$(echo "${{ github.event.client_payload.command }}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/-\+/-/g; s/^-//; s/-$//' | cut -c1-40)
+          BRANCH="agent/${SLUG:-task}-${{ github.run_id }}"
+          git checkout -b "$BRANCH"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------
+      # AGENT EXECUTION (Grok Build CLI, free-tier browser login auth)
+      # -----------------------------------------------------------------
+      # The headless agent must use Grok via x.ai CLI (not paid API keys).
+      # `GROK_AUTH_JSON` stores the logged-in ~/.grok/auth.json content.
+      - name: Install Grok CLI
+        run: curl -fsSL https://x.ai/cli/install.sh | bash
+
+      - name: Restore Grok auth file from secret
+        env:
+          GROK_AUTH_JSON: ${{ secrets.GROK_AUTH_JSON }}
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.grok"
+          printf '%s' "$GROK_AUTH_JSON" > "$HOME/.grok/auth.json"
+          chmod 600 "$HOME/.grok/auth.json"
+
+      - name: Execute agent task
+        id: run_agent
+        env:
+          COMMAND: ${{ github.event.client_payload.command }}
+        shell: bash
+        run: |
+          set -o pipefail
+          grok agent run --headless --yes --prompt "$COMMAND" 2>&1 | tee agent_stdout.log
+        continue-on-error: true
+
+      - name: Notify Telegram - agent could not complete the task
+        if: steps.run_agent.outcome == 'failure'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ github.event.client_payload.chat_id }}
+        run: |
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          REASON=$(tail -n 60 agent_stdout.log 2>/dev/null | sed 's/"/%22/g' | tr '\n' ' ' | cut -c1-600)
+          if [ -z "$REASON" ]; then REASON="Unknown error - see run log."; fi
+          MESSAGE="❌ Agent task failed.%0A%0ACommand: ${{ github.event.client_payload.command }}%0AReason: ${REASON}%0ALog: ${RUN_URL}"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${CHAT_ID}" -d "text=${MESSAGE}" -d "disable_web_page_preview=true" || true
+
+      - name: Stop here if the agent failed
+        if: steps.run_agent.outcome == 'failure'
+        run: exit 1
+
+      - name: Check for changes
+        id: changes
+        run: |
+          rm -f agent_stdout.log
+          if [ -n "$(git status --porcelain -- . ':!.agent_commit_message.tmp')" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notify Telegram - no changes were needed
+        if: steps.changes.outputs.changed == 'false'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ github.event.client_payload.chat_id }}
+        run: |
+          MESSAGE="ℹ️ Agent task finished but made no file changes for: ${{ github.event.client_payload.command }}%0A%0AThis can happen if the task was already satisfied or was informational. Check the run log for details."
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${CHAT_ID}" -d "text=${MESSAGE}" -d "disable_web_page_preview=true" || true
+
+      - name: Commit changes
+        if: steps.changes.outputs.changed == 'true'
+        id: commit
+        run: |
+          git add -A -- . ':!.agent_commit_message.tmp'
+          if [ -f .agent_commit_message.tmp ]; then
+            COMMIT_MSG=$(cat .agent_commit_message.tmp)
+            rm -f .agent_commit_message.tmp
+          else
+            COMMAND="${{ github.event.client_payload.command }}"
+            COMMIT_MSG="agent: $(echo "$COMMAND" | head -c 68)"
+          fi
+          git commit -m "$COMMIT_MSG"
+          echo "commit_message<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$COMMIT_MSG" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Push branch
+        if: steps.changes.outputs.changed == 'true'
+        id: push
+        run: git push -u origin "${{ steps.branch.outputs.branch }}"
+        continue-on-error: true
+
+      - name: Notify Telegram - push failed
+        if: steps.changes.outputs.changed == 'true' && steps.push.outcome == 'failure'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ github.event.client_payload.chat_id }}
+        run: |
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MESSAGE="❌ Agent made changes but failed to push branch ${{ steps.branch.outputs.branch }} (likely a permissions or branch-protection issue).%0ALog: ${RUN_URL}"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${CHAT_ID}" -d "text=${MESSAGE}" -d "disable_web_page_preview=true" || true
+          exit 1
+
+      - name: Create Pull Request
+        if: steps.changes.outputs.changed == 'true'
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE=$(echo "${{ steps.commit.outputs.commit_message }}" | head -n1)
+          printf 'Automated change requested via Telegram `/agent` command.\n\n**Command:** %s\n**Triggered by chat:** %s\n**Run log:** %s\n\n_Opened automatically by `.github/workflows/agent-task.yml` - review before merging._\n' \
+            "${{ github.event.client_payload.command }}" \
+            "${{ github.event.client_payload.chat_id }}" \
+            "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            > pr_body.txt
+          URL=$(gh pr create --base main --head "${{ steps.branch.outputs.branch }}" --title "$TITLE" --body-file pr_body.txt)
+          rm -f pr_body.txt
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      - name: Notify Telegram - PR creation failed
+        if: steps.changes.outputs.changed == 'true' && steps.pr.outcome == 'failure'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ github.event.client_payload.chat_id }}
+        run: |
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MESSAGE="⚠️ Agent pushed branch ${{ steps.branch.outputs.branch }} but PR creation failed (check for an existing PR or permissions issue). You can open it manually.%0ABranch: ${{ steps.branch.outputs.branch }}%0ALog: ${RUN_URL}"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${CHAT_ID}" -d "text=${MESSAGE}" -d "disable_web_page_preview=true" || true
+          exit 1
+
+      - name: Notify Telegram - success
+        if: steps.changes.outputs.changed == 'true' && steps.pr.outcome == 'success'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ github.event.client_payload.chat_id }}
+        run: |
+          MESSAGE="✅ Done — tap to review %26 merge: ${{ steps.pr.outputs.url }}"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${CHAT_ID}" -d "text=${MESSAGE}" -d "disable_web_page_preview=true" || true

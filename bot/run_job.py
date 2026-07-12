@@ -35,6 +35,10 @@ Expected environment variables:
     LOFI_CRF       - lofiloop only, H.264 CRF quality (default 18)
     LOFI_PRESET    - lofiloop only, x264 preset (default veryfast)
     LOFI_NOISE     - lofiloop only, invisible per-frame noise strength (default 1)
+    LOFI_FPS       - lofiloop only, optional output fps override (e.g. 30)
+    LOFI_SEED      - lofiloop only, optional deterministic RNG seed
+    LOFI_OUTPUT_NAME - lofiloop only, optional custom output base name
+    LOFI_NO_UPLOAD - lofiloop only, "true" to skip external upload fallback
     RESOLUTION     - photostudio only, "2k"|"4k"|"8k"|"16k" upscale target
     EFFECT         - photostudio only, color effect preset (e.g. "dslr")
 
@@ -218,8 +222,11 @@ def run_abroll(chat_id: str) -> None:
     if not broll_sources:
         raise RuntimeError("ABRoll requires at least one B-roll source.")
 
+    # abroll/main.py accepts URLs and local paths interchangeably via --main,
+    # so source_type doesn't change the flag (kept explicit for clarity).
+    _ = source_type
     cmd = [sys.executable, "abroll/main.py", "--output-dir", output_dir]
-    cmd += ["--main", source_value] if source_type == "path" else ["--main", source_value]
+    cmd += ["--main", source_value]
     cmd += ["--broll", *broll_sources]
     _run(cmd)
 
@@ -333,6 +340,10 @@ def run_lofiloop(chat_id: str) -> None:
     crf = _env("LOFI_CRF", "18")
     preset = _env("LOFI_PRESET", "veryfast")
     noise = _env("LOFI_NOISE", "1")
+    fps = _env("LOFI_FPS", "").strip()
+    seed = _env("LOFI_SEED", "").strip()
+    output_name = _env("LOFI_OUTPUT_NAME", "").strip()
+    no_upload = _env("LOFI_NO_UPLOAD", "false").lower() == "true"
     output_dir = "./job_output"
     os.makedirs(output_dir, exist_ok=True)
 
@@ -349,6 +360,14 @@ def run_lofiloop(chat_id: str) -> None:
         "--noise", noise,
         "--output-dir", output_dir,
     ]
+    if fps:
+        cmd += ["--fps", fps]
+    if seed:
+        cmd += ["--seed", seed]
+    if output_name:
+        cmd += ["--output-name", output_name]
+    if no_upload:
+        cmd.append("--no-upload")
     _run(cmd)
 
     # Read the manifest the CLI wrote (contains the hosted download link, if any).
@@ -394,6 +413,9 @@ def run_lofiloop(chat_id: str) -> None:
 
 TOOL_RUNNERS = {
     "lofiloop": run_lofiloop,
+    "lofi_video_render": run_lofiloop,
+    "lofi-video-render": run_lofiloop,
+    "lofivideorender": run_lofiloop,
     "aspectshift": run_aspectshift,
     "clipharvest": run_clipharvest,
     "watermarkwipe": run_watermarkwipe,

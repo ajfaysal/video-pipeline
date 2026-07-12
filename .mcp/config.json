@@ -1,0 +1,30 @@
+{
+  "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/specification/main/schema/config.json",
+  "_comment": "MCP server configuration template. Replace ${PLACEHOLDER} env vars with real values in your local environment or CI secrets. Do NOT commit real tokens to this file.",
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+      },
+      "description": "GitHub MCP server — repo access, issues, PRs, Actions"
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y", "@modelcontextprotocol/server-filesystem",
+        "."
+      ],
+      "description": "Filesystem MCP server — read/write project files"
+    },
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "env": {
+        "MEMORY_FILE": ".agent/MEMORY.md"
+      },
+      "description": "Persistent memory MCP server — stores decisions across sessions"
+    }
+  }
+}

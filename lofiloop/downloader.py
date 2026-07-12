@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 
@@ -26,15 +27,32 @@ from lofiloop import DownloadError
 _AUDIO_EXTS = (".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus", ".wma")
 _VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v")
 
+# Aggressive retry policy shared by every download path.
+_MAX_RETRIES = 4          # attempts per strategy
+_BACKOFF_BASE = 3.0       # seconds; grows 3, 6, 12
+
+
+def _retry_sleep(attempt: int) -> None:
+    wait = _BACKOFF_BASE * (2 ** (attempt - 1))
+    print(f"[lofiloop] retrying in {wait:.0f}s (attempt {attempt + 1}/{_MAX_RETRIES})...")
+    time.sleep(wait)
+
 
 # --------------------------------------------------------------------------- #
 # Google Drive helpers
 # --------------------------------------------------------------------------- #
 def _extract_drive_id(url: str) -> str | None:
     """Pull the file id out of the many shapes a Drive share link can take."""
+    # Normalise: strip whitespace, unwrap redirectors, percent-decode.
+    url = urllib.parse.unquote(url.strip())
+    m = re.search(r"[?&]q=(https?[^&\s]+)", url)  # google.com/url?q=<real-link>
+    if m:
+        url = urllib.parse.unquote(m.group(1))
+
     patterns = [
         r"/file/d/([a-zA-Z0-9_-]{20,})",          # .../file/d/<id>/view
         r"[?&]id=([a-zA-Z0-9_-]{20,})",           # ...open?id=<id>  /  uc?id=<id>
+        r"/download\?id=([a-zA-Z0-9_-]{20,})",    # drive.usercontent.google.com
         r"/d/([a-zA-Z0-9_-]{20,})",               # short /d/<id>
         r"/document/d/([a-zA-Z0-9_-]{20,})",      # docs
     ]
@@ -42,18 +60,46 @@ def _extract_drive_id(url: str) -> str | None:
         m = re.search(pat, url)
         if m:
             return m.group(1)
+    # Last resort: a bare file id pasted on its own.
+    if re.fullmatch(r"[a-zA-Z0-9_-]{25,}", url):
+        return url
     return None
 
 
 def _is_drive_url(url: str) -> bool:
     host = urllib.parse.urlparse(url).netloc.lower()
-    return "drive.google.com" in host or "docs.google.com" in host
+    return ("drive.google.com" in host or "docs.google.com" in host
+            or "drive.usercontent.google.com" in host)
 
 
-def _download_from_drive(url: str, dest_dir: str) -> str:
-    """Download a *public* Drive file with gdown (no API key required)."""
+def _looks_like_html(path: str) -> bool:
+    """Detect the classic Drive failure mode: an HTML error/quota page saved as the 'file'."""
     try:
-        import gdown  # noqa: F401
+        if os.path.getsize(path) > 5 * 1024 * 1024:
+            return False  # real HTML error pages are small
+        with open(path, "rb") as f:
+            head = f.read(512).lstrip().lower()
+        return head.startswith((b"<!doctype html", b"<html"))
+    except Exception:
+        return False
+
+
+def _download_from_drive(url: str, dest_dir: str, prefer: str = "audio") -> str:
+    """
+    Download a *public* Drive file with gdown (no API key required).
+
+    Bulletproofing:
+      * up to _MAX_RETRIES attempts per strategy with exponential backoff
+      * 4 fetch strategies covering every known Drive URL shape:
+          1. gdown by bare file id
+          2. gdown on the classic uc?export=download URL
+          3. gdown fuzzy on the original URL exactly as pasted
+          4. direct HTTP fetch of drive.usercontent.google.com (final fallback)
+      * HTML quota/permission pages are detected and rejected instead of being
+        passed to ffmpeg as 'audio'.
+    """
+    try:
+        import gdown as _gdown
     except ImportError as e:  # pragma: no cover - environment guard
         raise DownloadError(
             "gdown is required to fetch Google Drive links. Add `gdown` to requirements.txt."
@@ -64,54 +110,97 @@ def _download_from_drive(url: str, dest_dir: str) -> str:
         raise DownloadError(f"Couldn't extract a Google Drive file id from: {url}")
 
     os.makedirs(dest_dir, exist_ok=True)
-    out_template = os.path.join(dest_dir, "drive_audio")
+    out_template = os.path.join(dest_dir, "drive_audio" if prefer == "audio" else "drive_video")
 
     print(f"[lofiloop] Google Drive file id: {file_id}")
 
-    import gdown as _gdown
+    def _by_id():
+        return _gdown.download(id=file_id, output=out_template, quiet=False, fuzzy=True)
 
-    # gdown handles the big-file confirm token + cookies automatically.
-    downloaded = _gdown.download(
-        id=file_id,
-        output=out_template,
-        quiet=False,
-        fuzzy=True,
-    )
-    if not downloaded or not os.path.isfile(downloaded):
-        # Fallback: try the classic uc?export=download URL directly.
+    def _by_uc_url():
         uc_url = f"https://drive.google.com/uc?id={file_id}&export=download"
-        downloaded = _gdown.download(uc_url, out_template, quiet=False, fuzzy=True)
+        return _gdown.download(uc_url, out_template, quiet=False, fuzzy=True)
 
-    if not downloaded or not os.path.isfile(downloaded):
-        raise DownloadError(
-            "gdown failed to download the file. Make sure the Drive link is set to "
-            "'Anyone with the link can view'."
-        )
+    def _by_original_url():
+        return _gdown.download(url, out_template, quiet=False, fuzzy=True)
 
-    return _ensure_media_extension(downloaded, prefer="audio")
+    def _by_usercontent():
+        direct = (f"https://drive.usercontent.google.com/download"
+                  f"?id={file_id}&export=download&confirm=t")
+        return _download_direct_once(direct, out_template + "_direct")
+
+    strategies = [("gdown id", _by_id), ("gdown uc-url", _by_uc_url),
+                  ("gdown original", _by_original_url), ("usercontent direct", _by_usercontent)]
+
+    last_error: Exception | None = None
+    for name, strategy in strategies:
+        for attempt in range(1, _MAX_RETRIES + 1):
+            try:
+                print(f"[lofiloop] Drive strategy '{name}' attempt {attempt}/{_MAX_RETRIES}...")
+                downloaded = strategy()
+                if downloaded and os.path.isfile(downloaded) and os.path.getsize(downloaded) > 0:
+                    if _looks_like_html(downloaded):
+                        raise DownloadError("Got an HTML page instead of the file (permission/quota wall).")
+                    return _ensure_media_extension(downloaded, prefer=prefer)
+                raise DownloadError("strategy returned no file")
+            except Exception as e:
+                last_error = e
+                print(f"[lofiloop] Drive strategy '{name}' failed: {e}")
+                if attempt < _MAX_RETRIES:
+                    _retry_sleep(attempt)
+
+    raise DownloadError(
+        "All Google Drive download strategies failed. Make sure the link is set to "
+        f"'Anyone with the link can view'. Last error: {last_error}"
+    )
 
 
 # --------------------------------------------------------------------------- #
 # Direct URL helpers
 # --------------------------------------------------------------------------- #
+def _download_direct_once(url: str, dest: str) -> str:
+    """Single-attempt streaming download with HTTP Range resume support."""
+    existing = os.path.getsize(dest) if os.path.isfile(dest) else 0
+    headers = {"User-Agent": "Mozilla/5.0 (LofiLoop)"}
+    mode = "wb"
+    if existing > 0:
+        headers["Range"] = f"bytes={existing}-"
+        mode = "ab"
+
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=180) as resp:
+        # Server ignored our Range request -> start over from scratch.
+        if existing > 0 and getattr(resp, "status", 200) != 206:
+            mode = "wb"
+        with open(dest, mode) as out:
+            shutil.copyfileobj(resp, out, length=4 * 1024 * 1024)
+
+    if not os.path.isfile(dest) or os.path.getsize(dest) == 0:
+        raise DownloadError(f"Downloaded file is empty: {url}")
+    return dest
+
+
 def _download_direct(url: str, dest_dir: str, prefer: str) -> str:
     os.makedirs(dest_dir, exist_ok=True)
     parsed = urllib.parse.urlparse(url)
     name = os.path.basename(parsed.path) or ("audio_input" if prefer == "audio" else "video_input")
+    # Guard against querystring-only names and hostile characters.
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", name)[:120] or "media_input"
     dest = os.path.join(dest_dir, name)
 
     print(f"[lofiloop] Downloading direct URL -> {dest}")
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (LofiLoop)"})
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp, open(dest, "wb") as out:
-            shutil.copyfileobj(resp, out, length=1024 * 1024)
-    except Exception as e:
-        raise DownloadError(f"Failed to download {url}: {e}") from e
+    last_error: Exception | None = None
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            _download_direct_once(url, dest)  # resumes partial data on retry
+            return _ensure_media_extension(dest, prefer=prefer)
+        except Exception as e:
+            last_error = e
+            print(f"[lofiloop] Direct download attempt {attempt}/{_MAX_RETRIES} failed: {e}")
+            if attempt < _MAX_RETRIES:
+                _retry_sleep(attempt)
 
-    if os.path.getsize(dest) == 0:
-        raise DownloadError(f"Downloaded file is empty: {url}")
-
-    return _ensure_media_extension(dest, prefer=prefer)
+    raise DownloadError(f"Failed to download {url} after {_MAX_RETRIES} attempts: {last_error}")
 
 
 def _ensure_media_extension(path: str, prefer: str) -> str:
@@ -171,7 +260,7 @@ def resolve_audio(source: str, output_dir: str) -> str:
 
     if _is_drive_url(source):
         print("[lofiloop] Resolving Google Drive audio (zero-config, gdown)...")
-        return _download_from_drive(source, output_dir)
+        return _download_from_drive(source, output_dir, prefer="audio")
 
     if source.startswith(("http://", "https://")):
         return _download_direct(source, output_dir, prefer="audio")
@@ -190,7 +279,7 @@ def resolve_video(source: str, output_dir: str) -> str:
 
     if _is_drive_url(source):
         print("[lofiloop] Resolving Google Drive loop video (gdown)...")
-        return _download_from_drive(source, output_dir)
+        return _download_from_drive(source, output_dir, prefer="video")
 
     if source.startswith(("http://", "https://")):
         return _download_direct(source, output_dir, prefer="video")
