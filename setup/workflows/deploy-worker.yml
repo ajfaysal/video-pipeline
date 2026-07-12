@@ -1,0 +1,86 @@
+name: Deploy Cloudflare Worker
+
+# ---------------------------------------------------------------------------
+# Solution A: zero-touch worker deployment.
+#
+# Whenever anything under cloudflare-worker/ changes on main (or when run
+# manually from the Actions tab), this workflow deploys the Telegram webhook
+# worker with Wrangler. No manual Cloudflare dashboard logins ever again.
+#
+# One-time setup (only needed if you want Solution A; Solution B — the Python
+# poller in bot-poller.yml — needs NO Cloudflare secrets at all):
+#   1. Cloudflare dashboard -> My Profile -> API Tokens -> Create Token
+#      -> template "Edit Cloudflare Workers".
+#   2. Repo -> Settings -> Secrets and variables -> Actions:
+#        CLOUDFLARE_API_TOKEN   = the token from step 1
+#        CLOUDFLARE_ACCOUNT_ID  = your account id (dashboard right sidebar)
+#
+# If the secrets are missing the workflow skips gracefully instead of failing,
+# so it never blocks CI.
+# ---------------------------------------------------------------------------
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cloudflare-worker/**"
+      - ".github/workflows/deploy-worker.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check Cloudflare credentials
+        id: creds
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -n "$CF_TOKEN" ]; then
+            echo "have_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_token=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CLOUDFLARE_API_TOKEN secret not set - skipping worker deploy." \
+                 " Add it (see comments in this workflow) or use the Python poller (bot-poller.yml) instead."
+          fi
+
+      - name: Set up Node
+        if: steps.creds.outputs.have_token == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Deploy worker with Wrangler
+        if: steps.creds.outputs.have_token == 'true'
+        working-directory: cloudflare-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@3 deploy
+
+      - name: Sync worker secrets (only ones provided as repo secrets)
+        if: steps.creds.outputs.have_token == 'true'
+        working-directory: cloudflare-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+          GH_DISPATCH_PAT: ${{ secrets.DISPATCH_PAT }}
+        run: |
+          # Push whatever repo secrets exist down into the worker, so the repo
+          # is the single source of truth. Missing ones are skipped silently
+          # (they may already be set in Cloudflare via `wrangler secret put`).
+          put() { [ -n "$2" ] && printf '%s' "$2" | npx --yes wrangler@3 secret put "$1" || true; }
+          put TELEGRAM_BOT_TOKEN      "$TG_TOKEN"
+          put TELEGRAM_WEBHOOK_SECRET "$TG_WEBHOOK_SECRET"
+          put GITHUB_TOKEN            "$GH_DISPATCH_PAT"
+          put GITHUB_REPO             "${{ github.repository }}"

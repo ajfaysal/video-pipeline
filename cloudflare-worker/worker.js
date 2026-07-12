@@ -18,6 +18,9 @@
  *   GITHUB_TOKEN           - a fine-grained PAT with "Contents: read" and
  *                            "Actions: write" on this repo (for dispatch)
  *   GITHUB_REPO            - "owner/repo"
+ *   AGENT_CHAT_ID          - (optional) Telegram chat_id allowed to run
+ *                            `/agent <task>`. If unset, /agent is disabled
+ *                            for everyone (fails closed, never open).
  *
  * Required KV namespace binding (see wrangler.toml): BOT_STATE
  * Stores short-lived per-chat conversation state while collecting options.
@@ -32,15 +35,22 @@ async function tg(env, method, payload) {
     body: JSON.stringify(payload),
   });
   if (!resp.ok) {
-    console.error(`Telegram API ${method} failed: ${resp.status} ${await resp.text()}`);
+    console.error(`Telegram API ${method} failed: ${resp.status} ${await resp.clone().text()}`);
   }
   return resp;
 }
 
-function sendMessage(env, chatId, text, replyMarkup) {
+async function sendMessage(env, chatId, text, replyMarkup) {
   const payload = { chat_id: chatId, text, parse_mode: "Markdown", disable_web_page_preview: true };
   if (replyMarkup) payload.reply_markup = replyMarkup;
-  return tg(env, "sendMessage", payload);
+  const resp = await tg(env, "sendMessage", payload);
+  if (!resp.ok) {
+    // Markdown entity errors would otherwise silently swallow the message —
+    // retry once as plain text so the user always gets a reply.
+    delete payload.parse_mode;
+    return tg(env, "sendMessage", payload);
+  }
+  return resp;
 }
 
 function answerCallback(env, callbackQueryId, text) {
@@ -67,23 +77,109 @@ async function clearState(env, chatId) {
 async function dispatchJob(env, payload) {
   const [owner, repo] = env.GITHUB_REPO.split("/");
   const url = `https://api.github.com/repos/${owner}/${repo}/dispatches`;
-  console.error("GITHUB_TOKEN length:", env.GITHUB_TOKEN.length, "last4:", env.GITHUB_TOKEN.slice(-4));
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${env.GITHUB_TOKEN}`,
-      "Accept": "application/vnd.github+json",
-      "User-Agent": "video-pipeline-telegram-bot",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ event_type: "telegram-job", client_payload: payload }),
-  });
-  if (!resp.ok) {
-    const body = await resp.text();
-    console.error(`GitHub dispatch failed with status ${resp.status} ${resp.statusText}`);
-    console.error(`GitHub dispatch response body: ${body || "<empty>"}`);
+
+  // Up to 3 attempts with exponential backoff — GitHub occasionally returns
+  // transient 5xx / network errors and a lost dispatch means a silent no-op
+  // for the user.
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${env.GITHUB_TOKEN}`,
+          "Accept": "application/vnd.github+json",
+          "User-Agent": "video-pipeline-telegram-bot",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ event_type: "telegram-job", client_payload: payload }),
+      });
+      if (resp.status === 204) return true;
+      const body = await resp.text();
+      console.error(`GitHub dispatch attempt ${attempt} failed: ${resp.status} ${resp.statusText} ${body.slice(0, 300) || "<empty>"}`);
+      // 4xx (bad token / repo) won't heal on retry — bail out immediately.
+      if (resp.status >= 400 && resp.status < 500) return false;
+    } catch (e) {
+      console.error(`GitHub dispatch attempt ${attempt} error: ${e}`);
+    }
+    if (attempt < 3) await new Promise(r => setTimeout(r, attempt * 750));
   }
-  return resp.ok;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// AI Coding Agent bridge — `/agent <task description>`
+// ---------------------------------------------------------------------------
+// Separate, additive feature. Does not touch dispatchJob() (video-tool jobs)
+// or any existing command handler above/below it. Fires a distinct
+// repository_dispatch event_type ("agent_command") that only
+// `.github/workflows/agent-task.yml` listens for, so it cannot collide with
+// `telegram-job` (the video-processing dispatch).
+async function dispatchAgentTask(env, command, chatId) {
+  const [owner, repo] = env.GITHUB_REPO.split("/");
+  const url = `https://api.github.com/repos/${owner}/${repo}/dispatches`;
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${env.GITHUB_TOKEN}`,
+          "Accept": "application/vnd.github+json",
+          "User-Agent": "video-pipeline-telegram-bot",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          event_type: "agent_command",
+          client_payload: { command, chat_id: String(chatId) },
+        }),
+      });
+      if (resp.status === 204) return { ok: true };
+      const body = await resp.text();
+      console.error(`Agent dispatch attempt ${attempt} failed: ${resp.status} ${resp.statusText} ${body.slice(0, 300) || "<empty>"}`);
+      if (resp.status >= 400 && resp.status < 500) {
+        return { ok: false, error: `GitHub rejected the dispatch (${resp.status}): ${body.slice(0, 200) || resp.statusText}` };
+      }
+    } catch (e) {
+      console.error(`Agent dispatch attempt ${attempt} error: ${e}`);
+      if (attempt === 3) return { ok: false, error: `Network error talking to GitHub: ${e.message || e}` };
+    }
+    if (attempt < 3) await new Promise(r => setTimeout(r, attempt * 750));
+  }
+  return { ok: false, error: "GitHub dispatch failed after 3 attempts (transient error)." };
+}
+
+// Handles `/agent <task description>`. Only ever called from handleMessage's
+// dedicated branch below — never wired into the existing tool/menu flow, so
+// none of the video-tool command handling is touched.
+async function handleAgentCommand(env, chatId, text) {
+  const task = text.replace(/^\/agent(@\w+)?\s*/i, "").trim();
+
+  if (!env.AGENT_CHAT_ID) {
+    // Fail closed: if no authorized chat is configured, the feature is off
+    // for everyone rather than silently open to any chat.
+    await sendMessage(env, chatId, "❌ The `/agent` command isn't configured yet (missing AGENT_CHAT_ID secret).");
+    return;
+  }
+
+  if (String(chatId) !== String(env.AGENT_CHAT_ID)) {
+    await sendMessage(env, chatId, "❌ You're not authorized to use `/agent`.");
+    return;
+  }
+
+  if (!task) {
+    await sendMessage(env, chatId,
+      "Usage: `/agent <describe the code change you want>`\n\n" +
+      "Example: `/agent add a --speed flag to aspectshift`");
+    return;
+  }
+
+  const result = await dispatchAgentTask(env, task, chatId);
+
+  if (result.ok) {
+    await sendMessage(env, chatId, `🚀 Started: _${task}_\n\nI'll open a PR and message you here when it's ready for review.`);
+  } else {
+    await sendMessage(env, chatId, `❌ Couldn't start the agent task.\n\nReason: ${result.error}`);
+  }
 }
 
 const TOOL_LABELS = {
@@ -300,7 +396,7 @@ async function sourceFromMessage(env, message, allowAudio = false, allowPhoto = 
   if (!file) return null;
 
   if (file.file_size && file.file_size > 20 * 1024 * 1024) {
-    throw new Error("That file is over Telegram's 20MB bot-download limit.");
+    throw new Error("That file is over Telegram's 20MB bot-download limit. Please send a direct link (Google Drive works) instead.");
   }
 
   const fileResp = await tg(env, "getFile", { file_id: file.file_id });
@@ -415,6 +511,14 @@ async function handleMessage(env, message) {
   const chatId = message.chat.id;
   const text = (message.text || "").trim();
   const state = await getState(env, chatId);
+
+  // `/agent <task>` — AI coding agent bridge. Checked first and returns
+  // immediately so it can never fall through into (or be shadowed by) any
+  // existing conversation-state or menu handling below.
+  if (/^\/agent(@\w+)?(\s|$)/i.test(text)) {
+    await handleAgentCommand(env, chatId, text);
+    return;
+  }
 
   if (text === "/start" || text === "/help" || text === "/menu") {
     await showMainMenu(env, chatId);

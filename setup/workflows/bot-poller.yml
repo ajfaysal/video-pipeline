@@ -1,0 +1,66 @@
+name: Telegram Menu Bot (Python poller)
+
+# ---------------------------------------------------------------------------
+# Solution B: the bot UI/menu served straight from the Python backend — no
+# Cloudflare deploys, no dashboard logins, no wrangler tokens.
+#
+# bot/menu_bot.py long-polls Telegram getUpdates, renders the full menu
+# (featured 🎧 LofiLoop + ⋯ 3-dot overflow), collects options, and executes
+# jobs. It automatically calls deleteWebhook on startup so it supersedes the
+# Cloudflare Worker webhook while running.
+#
+# Required secret:   TELEGRAM_BOT_TOKEN
+# Optional secret:   DISPATCH_PAT (PAT with Actions:write) — when present,
+#                    jobs run on dedicated runners via telegram-dispatch.yml
+#                    instead of inline, so long renders never tie up the poller.
+#
+# The poller runs for ~5h50m per job (GitHub caps a job at 6h) and the cron
+# relaunches it every 5h30m, giving continuous coverage with a small overlap
+# guard (concurrency group prevents two pollers fighting over getUpdates).
+# ---------------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 */5 * * *"   # relaunch every 5 hours
+
+concurrency:
+  group: telegram-menu-bot-poller
+  cancel-in-progress: true    # a fresh poller replaces the old one cleanly
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg (needed for inline job execution)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-poller-${{ hashFiles('requirements.txt') }}
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run menu bot (long-polling)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          GH_DISPATCH_TOKEN: ${{ secrets.DISPATCH_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          POLLER_MAX_SECONDS: "20400"   # 5h40m, then exit cleanly for the next cron
+        run: python bot/menu_bot.py

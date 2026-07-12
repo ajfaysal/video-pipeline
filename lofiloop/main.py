@@ -62,7 +62,11 @@ def main() -> int:
         print("[lofiloop] Resolving long audio track...")
         audio_path = resolve_audio(args.audio, args.output_dir)
 
-        base = args.output_name or f"lofi_{int(args.hours)}h" if args.hours == int(args.hours) else f"lofi_{args.hours}h"
+        # NOTE: parenthesized deliberately — the previous version had a
+        # precedence bug where --output-name was silently ignored whenever
+        # a fractional number of hours was requested.
+        default_base = f"lofi_{int(args.hours)}h" if args.hours == int(args.hours) else f"lofi_{args.hours}h"
+        base = args.output_name or default_base
         output_path = os.path.join(args.output_dir, f"{base}.mp4")
 
         info = render_lofi(

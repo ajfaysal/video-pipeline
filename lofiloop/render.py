@@ -201,8 +201,28 @@ def render_lofi(
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
 
+    keyint = max(1, int(round(out_fps * 4)))
+    # x264 speed pack tuned for looped lofi content:
+    #   threads=0            -> use every core for encoding
+    #   lookahead_threads    -> parallel lookahead (big win on multi-core CI)
+    #   scenecut=0           -> the loop has no scene changes; skipping the
+    #                           scenecut analysis is a large, free speedup and
+    #                           guarantees perfectly regular GOPs
+    #   rc-lookahead=20      -> shorter RC window: faster, negligible quality
+    #                           delta on static lofi loops
+    # NOTE: the previous build passed `nal-hrd=cbr` without VBV parameters,
+    # which x264 rejects/ignores with a warning (CRF mode has no bitrate to
+    # hold constant) — it was dead weight and has been removed.
+    x264_params = (
+        f"keyint={keyint}:min-keyint={keyint}:scenecut=0:"
+        "threads=0:lookahead_threads=auto:rc-lookahead=20"
+    )
+
     cmd: list[str] = [
         "ffmpeg", "-y",
+        # ---- multi-threading everywhere -------------------------------------
+        "-threads", "0",             # decoder threads: all cores
+        "-filter_threads", "0",      # filtergraph threads: all cores
         # ---- global flags for a glitch-free infinite loop -------------------
         "-fflags", "+genpts",
         # ---- input 0: the short loop video, looped forever ------------------
@@ -214,7 +234,7 @@ def render_lofi(
         # ---- per-frame uniqueness + color drift ----------------------------
         "-vf", vf,
         "-r", f"{out_fps:.4f}",
-        "-vsync", "cfr",
+        "-fps_mode", "cfr",          # modern replacement for deprecated -vsync
         # ---- video encode (studio grade, streaming-ready) ------------------
         "-c:v", "libx264",
         "-preset", preset,
@@ -222,7 +242,8 @@ def render_lofi(
         "-profile:v", "high",
         "-level", "4.2",
         "-pix_fmt", "yuv420p",
-        "-x264-params", f"nal-hrd=cbr:keyint={int(out_fps*4)}:min-keyint={int(out_fps*4)}",
+        "-threads", "0",             # encoder threads: all cores
+        "-x264-params", x264_params,
         # ---- audio encode --------------------------------------------------
         "-c:a", "aac",
         "-b:a", audio_bitrate,
@@ -245,6 +266,7 @@ def render_lofi(
 
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     last_pct = -1
+    speed = ""
     tail: list[str] = []
     try:
         for line in proc.stdout:  # type: ignore[union-attr]
@@ -252,6 +274,8 @@ def render_lofi(
             tail.append(line)
             if len(tail) > 40:
                 tail.pop(0)
+            if line.startswith("speed="):
+                speed = line.split("=", 1)[1].strip()
             if line.startswith("out_time_ms="):
                 try:
                     cur = int(line.split("=", 1)[1]) / 1_000_000.0
@@ -259,7 +283,7 @@ def render_lofi(
                     pct = int(frac * 100)
                     if pct != last_pct and pct % 5 == 0:
                         last_pct = pct
-                        print(f"[lofiloop] progress: {pct}%")
+                        print(f"[lofiloop] progress: {pct}%" + (f" (speed {speed})" if speed else ""), flush=True)
                         if progress_cb:
                             try:
                                 progress_cb(frac)

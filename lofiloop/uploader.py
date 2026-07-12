@@ -109,11 +109,18 @@ def upload_file(path: str) -> dict:
     if size_mb <= 512:  # 0x0.st has a ~512MB cap
         backends.append(("0x0.st", _upload_0x0))
 
+    import time
     for name, fn in backends:
-        link = fn(path)
-        if link:
-            print(f"[lofiloop] Uploaded via {name}: {link}")
-            return {"url": link, "host": name}
+        # Two attempts per backend — transient network hiccups on multi-GB
+        # uploads are common and a retry is much cheaper than losing the render.
+        for attempt in (1, 2):
+            link = fn(path)
+            if link:
+                print(f"[lofiloop] Uploaded via {name}: {link}")
+                return {"url": link, "host": name}
+            if attempt == 1:
+                print(f"[lofiloop] {name} attempt 1 failed; retrying in 10s...")
+                time.sleep(10)
 
     raise UploadError("All upload backends failed (GoFile, transfer.sh, 0x0.st).")
 

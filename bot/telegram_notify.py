@@ -25,10 +25,27 @@ def _token() -> str:
 
 
 def send_message(chat_id: str, text: str) -> None:
+    """Progress messages must not get lost — retry transient failures 3x."""
+    import time
     url = API_ROOT.format(token=_token(), method="sendMessage")
-    resp = requests.post(url, data={"chat_id": chat_id, "text": text[:4000]})
-    if not resp.ok:
-        print(f"[telegram] sendMessage failed: {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+    for attempt in range(1, 4):
+        try:
+            resp = requests.post(url, data={"chat_id": chat_id, "text": text[:4000]}, timeout=30)
+            if resp.ok:
+                return
+            if resp.status_code == 429:
+                try:
+                    retry_after = int(resp.json().get("parameters", {}).get("retry_after", 3))
+                except Exception:
+                    retry_after = 3
+                time.sleep(retry_after + 1)
+                continue
+            print(f"[telegram] sendMessage failed: {resp.status_code} {resp.text[:300]}", file=sys.stderr)
+            if 400 <= resp.status_code < 500:
+                return  # won't heal on retry
+        except requests.RequestException as e:
+            print(f"[telegram] sendMessage attempt {attempt} error: {e}", file=sys.stderr)
+        time.sleep(2 ** attempt)
 
 
 def send_video(chat_id: str, video_path: str, caption: str = "") -> None:
