@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-label="LofiMellowHQ Open Graph image">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0B1020"/>
+      <stop offset="50%" stop-color="#141A2E"/>
+      <stop offset="100%" stop-color="#1a1040"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="30%" cy="40%" r="50%">
+      <stop offset="0%" stop-color="#7C5CFF" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#0B1020" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow2" cx="75%" cy="60%" r="40%">
+      <stop offset="0%" stop-color="#F7B267" stop-opacity="0.2"/>
+      <stop offset="100%" stop-color="#0B1020" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+  <rect width="1200" height="630" fill="url(#glow2)"/>
+  <!-- rain accents -->
+  <g stroke="#7C5CFF" stroke-opacity="0.3" stroke-width="1.5">
+    <line x1="100" y1="50" x2="80" y2="150"/>
+    <line x1="200" y1="80" x2="185" y2="200"/>
+    <line x1="900" y1="60" x2="885" y2="180"/>
+    <line x1="1050" y1="100" x2="1030" y2="220"/>
+    <line x1="1100" y1="40" x2="1085" y2="140"/>
+  </g>
+  <text x="600" y="280" text-anchor="middle" fill="#F8FAFC" font-family="Georgia, serif" font-size="72" letter-spacing="4">LofiMellowHQ</text>
+  <text x="600" y="350" text-anchor="middle" fill="#94A3B8" font-family="system-ui, sans-serif" font-size="28" letter-spacing="3">Original Lo-Fi · Neo-Classical Piano · Ambient</text>
+  <rect x="450" y="400" width="300" height="2" fill="#7C5CFF" opacity="0.6"/>
+  <text x="600" y="460" text-anchor="middle" fill="#F7B267" font-family="system-ui, sans-serif" font-size="20" letter-spacing="6">LOFIMELLOWHQ.STUDIO</text>
+</svg>

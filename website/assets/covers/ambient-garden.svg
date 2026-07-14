@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" role="img" aria-label="Ambient Garden album cover">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0B1020"/>
+      <stop offset="50%" stop-color="#0f1a28"/>
+      <stop offset="100%" stop-color="#152018"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="70%" cy="25%" r="35%">
+      <stop offset="0%" stop-color="#F7B267" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#0B1020" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="800" height="800" fill="url(#bg)"/>
+  <rect width="800" height="800" fill="url(#sun)"/>
+  <!-- abstract leaves / petals -->
+  <ellipse cx="300" cy="400" rx="80" ry="140" fill="#7C5CFF" opacity="0.2" transform="rotate(-25 300 400)"/>
+  <ellipse cx="380" cy="380" rx="70" ry="130" fill="#7C5CFF" opacity="0.25" transform="rotate(10 380 380)"/>
+  <ellipse cx="450" cy="420" rx="60" ry="120" fill="#F7B267" opacity="0.15" transform="rotate(35 450 420)"/>
+  <ellipse cx="340" cy="450" rx="50" ry="100" fill="#7C5CFF" opacity="0.18" transform="rotate(-10 340 450)"/>
+  <!-- stem -->
+  <path d="M380,520 Q390,600 400,700" stroke="#94A3B8" stroke-opacity="0.4" stroke-width="2" fill="none"/>
+  <!-- floating particles -->
+  <circle cx="200" cy="250" r="3" fill="#F7B267" opacity="0.5"/>
+  <circle cx="500" cy="200" r="2" fill="#7C5CFF" opacity="0.6"/>
+  <circle cx="550" cy="320" r="2.5" fill="#F8FAFC" opacity="0.4"/>
+  <circle cx="220" cy="350" r="2" fill="#F8FAFC" opacity="0.35"/>
+  <circle cx="600" cy="450" r="3" fill="#7C5CFF" opacity="0.4"/>
+  <text x="400" y="720" text-anchor="middle" fill="#F8FAFC" font-family="Georgia, serif" font-size="38" letter-spacing="6">AMBIENT GARDEN</text>
+  <text x="400" y="760" text-anchor="middle" fill="#94A3B8" font-family="system-ui, sans-serif" font-size="16" letter-spacing="6">LOFIMELLOWHQ</text>
+</svg>

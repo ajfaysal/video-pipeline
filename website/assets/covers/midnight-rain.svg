@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" role="img" aria-label="Midnight Rain album cover">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0B1020"/>
+      <stop offset="45%" stop-color="#1a1540"/>
+      <stop offset="100%" stop-color="#0d1a2e"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="35%" r="55%">
+      <stop offset="0%" stop-color="#7C5CFF" stop-opacity="0.55"/>
+      <stop offset="55%" stop-color="#4c3a99" stop-opacity="0.2"/>
+      <stop offset="100%" stop-color="#0B1020" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="moon" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F8FAFC"/>
+      <stop offset="100%" stop-color="#94A3B8"/>
+    </linearGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8"/>
+    </filter>
+  </defs>
+  <rect width="800" height="800" fill="url(#bg)"/>
+  <rect width="800" height="800" fill="url(#glow)"/>
+  <circle cx="400" cy="280" r="90" fill="url(#moon)" opacity="0.9"/>
+  <circle cx="430" cy="260" r="78" fill="#0B1020" opacity="0.85"/>
+  <!-- rain lines -->
+  <g stroke="#7C5CFF" stroke-opacity="0.35" stroke-width="1.5">
+    <line x1="120" y1="120" x2="100" y2="220"/>
+    <line x1="200" y1="80" x2="185" y2="200"/>
+    <line x1="280" y1="150" x2="260" y2="280"/>
+    <line x1="520" y1="100" x2="505" y2="230"/>
+    <line x1="600" y1="140" x2="580" y2="270"/>
+    <line x1="680" y1="90" x2="665" y2="210"/>
+    <line x1="160" y1="300" x2="145" y2="420"/>
+    <line x1="340" y1="380" x2="325" y2="500"/>
+    <line x1="460" y1="350" x2="445" y2="470"/>
+    <line x1="640" y1="320" x2="620" y2="450"/>
+    <line x1="240" y1="480" x2="225" y2="600"/>
+    <line x1="560" y1="500" x2="545" y2="630"/>
+    <line x1="720" y1="400" x2="700" y2="530"/>
+    <line x1="80" y1="450" x2="65" y2="580"/>
+  </g>
+  <ellipse cx="400" cy="620" rx="220" ry="40" fill="#7C5CFF" opacity="0.15" filter="url(#soft)"/>
+  <text x="400" y="700" text-anchor="middle" fill="#F8FAFC" font-family="Georgia, serif" font-size="42" letter-spacing="8">MIDNIGHT RAIN</text>
+  <text x="400" y="740" text-anchor="middle" fill="#94A3B8" font-family="system-ui, sans-serif" font-size="16" letter-spacing="6">LOFIMELLOWHQ</text>
+</svg>
