@@ -1,0 +1,5 @@
+# Cloudflare Pages redirects
+# Clean trailing slashes and optional pretty URLs
+
+/home / 301
+/index / 301

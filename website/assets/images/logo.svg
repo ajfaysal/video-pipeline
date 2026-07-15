@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="LofiMellowHQ logo mark">
+  <defs>
+    <linearGradient id="lg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7C5CFF"/>
+      <stop offset="100%" stop-color="#F7B267"/>
+    </linearGradient>
+  </defs>
+  <rect width="48" height="48" rx="12" fill="#141A2E"/>
+  <circle cx="24" cy="20" r="8" fill="none" stroke="url(#lg)" stroke-width="2"/>
+  <path d="M18 28 Q24 36 30 28" fill="none" stroke="url(#lg)" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="24" cy="20" r="2.5" fill="#F7B267"/>
+</svg>
