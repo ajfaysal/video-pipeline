@@ -1,24 +1,21 @@
-# Shared / AspectShift
+# ---- StockFlow AI core ----
+python-telegram-bot>=21.0
+requests>=2.31.0
+Pillow>=10.2.0
+
+# Optional: true PNG->SVG vector tracing (falls back to embedded SVG without it)
+# vtracer>=0.6.11
+
+# ---- Video Content Pipeline tools (existing repo modules) ----
 opencv-python-headless>=4.9.0
 numpy>=1.26.0
 yt-dlp>=2024.4.9
 tqdm>=4.66.0
-
-# Telegram bot job runner
-requests>=2.31.0
-
-# ClipHarvest (transcription + audio scoring)
 faster-whisper>=1.0.1
 librosa>=0.10.2
 soundfile>=0.12.1
-
-# WatermarkWipe has no additional dependencies beyond the shared set above.
-
-# LofiLoop (zero-config Google Drive download + 2GB Telegram delivery)
 gdown>=5.1.0
 pyrogram>=2.0.106
 tgcrypto>=1.2.5
-
-# Headless coding agent (bot/agent_runner.py, triggered by /agent in Telegram)
 openai>=1.40.0
 pyyaml>=6.0.1
