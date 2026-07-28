@@ -1,0 +1,59 @@
+{
+  "telegram": {
+    "bot_token_env": "TELEGRAM_BOT_TOKEN",
+    "webhook_secret": "",
+    "miniapp_url": "",
+    "public_base_url": ""
+  },
+  "defaults": {
+    "engine": "huggingface",
+    "resolution": "2k",
+    "format": "png",
+    "upscale": false,
+    "title_length": 70,
+    "tag_count": 50,
+    "aspect": "square"
+  },
+  "engines": {
+    "huggingface": {
+      "label": "Hugging Face (FLUX.1-schnell) - free",
+      "api_format": "huggingface",
+      "base_url": "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell",
+      "model": "black-forest-labs/FLUX.1-schnell",
+      "api_key": "",
+      "api_key_env": "HF_TOKEN",
+      "extra_headers": {},
+      "options": { "wait_for_model": true }
+    },
+    "openai": {
+      "label": "OpenAI (gpt-image-1 / DALL-E 3)",
+      "api_format": "openai",
+      "base_url": "https://api.openai.com/v1/images/generations",
+      "model": "gpt-image-1",
+      "api_key": "",
+      "api_key_env": "OPENAI_API_KEY",
+      "extra_headers": {},
+      "options": { "size": "1024x1024", "quality": "high" }
+    },
+    "stability": {
+      "label": "Stability AI (SD3.5 / Ultra)",
+      "api_format": "stability",
+      "base_url": "https://api.stability.ai/v2beta/stable-image/generate/sd3",
+      "model": "sd3.5-large",
+      "api_key": "",
+      "api_key_env": "STABILITY_API_KEY",
+      "extra_headers": {},
+      "options": { "output_format": "png", "aspect_ratio": "1:1" }
+    },
+    "midjourney": {
+      "label": "Midjourney proxy (OpenAI-compatible)",
+      "api_format": "openai-compatible",
+      "base_url": "",
+      "model": "midjourney",
+      "api_key": "",
+      "api_key_env": "MIDJOURNEY_API_KEY",
+      "extra_headers": {},
+      "options": { "size": "1024x1024" }
+    }
+  }
+}

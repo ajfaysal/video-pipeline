@@ -5,3 +5,7 @@ clips/
 job_output/
 _transcript_cache/
 .env
+
+# StockFlow AI
+stockflow_output/
+.config-*.tmp
