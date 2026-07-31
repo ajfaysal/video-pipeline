@@ -235,6 +235,7 @@ const TOOL_GROUPS = [
     items: [
       { tool: "watermarkwipe", description: "remove logos and watermarks" },
       { tool: "photostudio", description: "upscale photos up to 16K Ultra HD + pro color effects (DSLR, HDR, Portrait…)" },
+      { tool: "qualityboost", description: "fast 2x Lanczos video upscale + denoise/sharpen (~30-60s)" },
     ],
   },
   {
@@ -276,6 +277,7 @@ function menuKeyboard() {
      { text: TOOL_LABELS.loudnorm, data: "tool:loudnorm" }],
     [{ text: TOOL_LABELS.photostudio, data: "tool:photostudio" },
      { text: TOOL_LABELS.autochapters, data: "tool:autochapters" }],
+    [{ text: "🚀 QualityBoost — Fast Video Upscale", data: "tool:qualityboost" }],
     [{ text: "⋯ More", data: "overflow" }],
   ]);
 }
@@ -363,6 +365,8 @@ function sourceInstructions(tool) {
       return "Send the video you want normalized to broadcast loudness.";
     case "autochapters":
       return "Send your long video link or file. I’ll generate chapter timestamps from the transcript.";
+    case "qualityboost":
+      return "🚀 *QualityBoost* — Step 1\n\nSend the video you want to upscale + enhance, or paste a direct link.";
     default:
       return "Send the video or link for this tool.";
   }
@@ -429,6 +433,17 @@ async function continueAfterSource(env, chatId, state) {
         [{ text: "🖥️ 2K (2048px)", data: "res:2k" }, { text: "📺 4K (4096px)", data: "res:4k" }],
         [{ text: "🎥 8K (8192px)", data: "res:8k" }, { text: "🚀 16K Ultra HD", data: "res:16k" }],
         [{ text: "⏭️ Keep original size (effect only)", data: "res:none" }],
+      ]));
+    return;
+  }
+
+  if (state.tool === "qualityboost") {
+    state.step = "qb_choose_scale";
+    await setState(env, chatId, state);
+    await sendMessage(env, chatId,
+      "🚀 *QualityBoost* — Step 2 of 3\n\nChoose upscale factor (Lanczos resampling):",
+      withBackButton([
+        [{ text: "2× (recommended)", data: "qbscale:2" }, { text: "3×", data: "qbscale:3" }, { text: "4×", data: "qbscale:4" }],
       ]));
     return;
   }
@@ -699,6 +714,31 @@ async function handleCallback(env, callbackQuery) {
     return;
   }
 
+  if (kind === "qbscale" && state && state.step === "qb_choose_scale") {
+    state.qb_scale = value;
+    state.step = "qb_choose_fixes";
+    await setState(env, chatId, state);
+    await sendMessage(env, chatId,
+      "🔧 *Step 3 of 3* — Quality fixes (applied before/after upscale):",
+      withBackButton([
+        [{ text: "✨ Sharpen only (default)", data: "qbfix:sharpen" }],
+        [{ text: "🧹 Denoise + Sharpen", data: "qbfix:denoise_sharpen" }],
+        [{ text: "📐 Stabilize + Sharpen", data: "qbfix:stabilize_sharpen" }],
+        [{ text: "🔥 All fixes (denoise + stabilize + sharpen)", data: "qbfix:all" }],
+        [{ text: "⏭️ Upscale only (no fixes)", data: "qbfix:none" }],
+      ]));
+    return;
+  }
+
+  if (kind === "qbfix" && state && state.step === "qb_choose_fixes") {
+    const fixes = value;
+    state.qb_denoise = ["denoise_sharpen", "all"].includes(fixes) ? "true" : "false";
+    state.qb_stabilize = ["stabilize_sharpen", "all"].includes(fixes) ? "true" : "false";
+    state.qb_sharpen = fixes !== "none" ? "true" : "false";
+    await dispatchQualityBoost(env, chatId, state);
+    return;
+  }
+
   if (kind === "clips") {
     state.num_clips = value;
     state.min_duration = "20";
@@ -737,6 +777,68 @@ async function handleCallback(env, callbackQuery) {
   }
 
   await answerCallback(env, callbackQuery.id, "That step is no longer active. Please reopen the menu.");
+}
+
+async function dispatchQualityBoost(env, chatId, state) {
+  const [owner, repo] = env.GITHUB_REPO.split("/");
+  const url = `https://api.github.com/repos/${owner}/${repo}/dispatches`;
+
+  const payload = {
+    event_type: "quality_boost",
+    client_payload: {
+      chat_id: String(chatId),
+      tool: "qualityboost",
+      source_type: state.source_type,
+      source_value: state.source_value,
+      options: {
+        source_value: state.source_value,
+        scale_factor: state.qb_scale || "2",
+        denoise: state.qb_denoise || "false",
+        stabilize: state.qb_stabilize || "false",
+        sharpen: state.qb_sharpen || "true",
+        crf: "16",
+      },
+    },
+  };
+
+  let ok = false;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${env.GITHUB_TOKEN}`,
+          "Accept": "application/vnd.github+json",
+          "User-Agent": "video-pipeline-telegram-bot",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+      if (resp.status === 204) { ok = true; break; }
+      const body = await resp.text();
+      console.error(`QualityBoost dispatch attempt ${attempt} failed: ${resp.status} ${body.slice(0, 300)}`);
+      if (resp.status >= 400 && resp.status < 500) break;
+    } catch (e) {
+      console.error(`QualityBoost dispatch attempt ${attempt} error: ${e}`);
+    }
+    if (attempt < 3) await new Promise(r => setTimeout(r, attempt * 750));
+  }
+
+  await clearState(env, chatId);
+
+  if (ok) {
+    const fixes = [];
+    if (state.qb_denoise === "true") fixes.push("denoise");
+    if (state.qb_stabilize === "true") fixes.push("stabilize");
+    if (state.qb_sharpen === "true") fixes.push("sharpen");
+    const fixLabel = fixes.length ? fixes.join(" + ") : "upscale only";
+    await sendMessage(env, chatId,
+      `🚀 QualityBoost dispatched! ${state.qb_scale}× Lanczos upscale + ${fixLabel}.\n\n` +
+      `⏱ Typical turnaround: 30-60 seconds. I'll message you here when it's ready.`,
+      menuKeyboard());
+  } else {
+    await sendMessage(env, chatId, "❌ Couldn't start QualityBoost (GitHub dispatch failed). Please try again.", menuKeyboard());
+  }
 }
 
 async function dispatchAndFinish(env, chatId, state) {

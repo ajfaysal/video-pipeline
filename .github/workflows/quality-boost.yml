@@ -1,0 +1,130 @@
+name: QualityBoost
+
+# FFmpeg-only fast 2x Lanczos upscale + optional quality fixes.
+# Triggered by repository_dispatch from the Cloudflare Worker (via the
+# Telegram bot) or manually via workflow_dispatch from the Actions tab.
+#
+# Typical turnaround: 30-60 seconds for a standard video. No VPS needed.
+
+on:
+  repository_dispatch:
+    types: [quality_boost]
+
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: "Video URL to upscale (leave blank if using input_path)"
+        required: false
+        default: ""
+      input_path:
+        description: "Local repo-relative path to a video file (leave blank if using video_url)"
+        required: false
+        default: ""
+      scale_factor:
+        description: "Upscale multiplier"
+        required: false
+        default: "2"
+        type: choice
+        options:
+          - "2"
+          - "3"
+          - "4"
+      denoise:
+        description: "Apply hqdn3d denoiser before upscale"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      stabilize:
+        description: "Apply vidstab two-pass stabilization"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      sharpen:
+        description: "Apply unsharp mask sharpening after upscale"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      crf:
+        description: "H.264 CRF quality (lower = better, 0-51)"
+        required: false
+        default: "16"
+
+jobs:
+  boost:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-qualityboost-${{ hashFiles('requirements.txt') }}
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run QualityBoost
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ github.event.client_payload.chat_id }}
+          SOURCE_VALUE: ${{ github.event.client_payload.options.source_value || github.event.inputs.video_url }}
+          SCALE_FACTOR: ${{ github.event.client_payload.options.scale_factor || github.event.inputs.scale_factor || '2' }}
+          DENOISE: ${{ github.event.client_payload.options.denoise || github.event.inputs.denoise || 'false' }}
+          STABILIZE: ${{ github.event.client_payload.options.stabilize || github.event.inputs.stabilize || 'false' }}
+          SHARPEN: ${{ github.event.client_payload.options.sharpen || github.event.inputs.sharpen || 'true' }}
+          CRF: ${{ github.event.client_payload.options.crf || github.event.inputs.crf || '16' }}
+        run: |
+          VIDEO_SRC="${SOURCE_VALUE:-${{ github.event.inputs.video_url }}}"
+          INPUT_PATH="${{ github.event.inputs.input_path }}"
+
+          ARGS="--scale-factor $SCALE_FACTOR --crf $CRF --output-dir ./output"
+
+          if [ -n "$VIDEO_SRC" ]; then
+            ARGS="--url \"$VIDEO_SRC\" $ARGS"
+          elif [ -n "$INPUT_PATH" ]; then
+            ARGS="--input \"$INPUT_PATH\" $ARGS"
+          else
+            echo "::error::No video source provided (video_url or input_path required)"
+            exit 1
+          fi
+
+          if [ "$DENOISE" = "true" ]; then
+            ARGS="$ARGS --denoise"
+          fi
+          if [ "$STABILIZE" = "true" ]; then
+            ARGS="$ARGS --stabilize"
+          fi
+          if [ "$SHARPEN" = "true" ]; then
+            ARGS="$ARGS --sharpen"
+          fi
+
+          eval python qualityboost/main.py $ARGS
+
+      - name: Upload output artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qualityboost-output
+          path: output/
+          retention-days: 7

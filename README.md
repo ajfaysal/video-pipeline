@@ -13,6 +13,7 @@ with zero VPS required (Cloudflare Workers + GitHub Actions).
 - **AudioDuck** - ducks background music under a voiceover track
 - **LoudNorm** - normalizes audio loudness to broadcast-standard -14 LUFS with two-pass ffmpeg loudnorm
 - **AutoChapters** - generates YouTube chapter timestamps from transcripts and embeds chapter metadata
+- **QualityBoost** 🚀 - fast FFmpeg-only video upscale (2×/3×/4× Lanczos) + optional denoise, stabilize, and sharpen — ~30-60s turnaround, no VPS or ML models needed
 
 ## Requirements
 
@@ -136,7 +137,7 @@ python audioduck/main.py --video video.mp4 --voiceover narration.mp3 --output-di
 ## Running via GitHub Actions (no local setup needed)
 
 Each tool has a `workflow_dispatch`-triggered workflow under `.github/workflows/`:
-`aspectshift.yml`, `clipharvest.yml`, `watermarkwipe.yml`, `abroll.yml`, `introoutro.yml`, `stitcher.yml`, `audioduck.yml`, `loudnorm.yml`, `autochapters.yml`. Trigger them from the Actions tab with the requested repo-relative path(s) or URL(s), and download the result from the run's Artifacts.
+`aspectshift.yml`, `clipharvest.yml`, `watermarkwipe.yml`, `abroll.yml`, `introoutro.yml`, `stitcher.yml`, `audioduck.yml`, `loudnorm.yml`, `autochapters.yml`, `quality-boost.yml`. Trigger them from the Actions tab with the requested repo-relative path(s) or URL(s), and download the result from the run's Artifacts.
 
 ---
 
@@ -144,7 +145,7 @@ Each tool has a `workflow_dispatch`-triggered workflow under `.github/workflows/
 
 Architecture: **Cloudflare Worker** (shows a menu, then collects your tool/options choice via inline buttons) → triggers **GitHub Actions** (`telegram-dispatch.yml`, does the actual ffmpeg/whisper work) → Actions sends the finished video/thumbnail straight back to your chat. Nothing needs to run 24/7 on a server you manage.
 
-The Worker exposes LofiLoop, AspectShift, ClipHarvest, WatermarkWipe, ABRoll, IntroOutro, Stitcher, AudioDuck, LoudNorm, and AutoChapters as bot options, with a modern grouped menu and a `⋯ More` (3-dot) overflow for About/Help/Large-files. LofiLoop collects the short loop clip, then a public Google Drive audio link, then the target hours. ABRoll and Stitcher ask for additional clips, AudioDuck asks for the narration track, and LoudNorm/AutoChapters dispatch as soon as the source video is collected.
+The Worker exposes LofiLoop, AspectShift, ClipHarvest, WatermarkWipe, ABRoll, IntroOutro, Stitcher, AudioDuck, LoudNorm, AutoChapters, and QualityBoost as bot options, with a modern grouped menu and a `⋯ More` (3-dot) overflow for About/Help/Large-files. LofiLoop collects the short loop clip, then a public Google Drive audio link, then the target hours. ABRoll and Stitcher ask for additional clips, AudioDuck asks for the narration track, and LoudNorm/AutoChapters dispatch as soon as the source video is collected.
 
 ### Two ways to serve the menu UI (no manual Cloudflare logins)
 
@@ -227,11 +228,12 @@ stitcher/           main.py
 audioduck/          main.py
 loudnorm/           main.py
 autochapters/       main.py
+qualityboost/       main.py   (FFmpeg-only video upscale + quality fix)
 bot/                telegram_notify.py, run_job.py   (used by telegram-dispatch.yml)
                     agent_runner.py                  (headless coding agent, used by agent-task.yml)
 cloudflare-worker/  worker.js, wrangler.toml
 .agent/             skills/, hooks/, MEMORY.md, QUICKSTART.md — AI agent infrastructure
-.github/workflows/  aspectshift.yml, clipharvest.yml, watermarkwipe.yml, abroll.yml, introoutro.yml, stitcher.yml, audioduck.yml, loudnorm.yml, autochapters.yml, telegram-dispatch.yml
+.github/workflows/  aspectshift.yml, clipharvest.yml, watermarkwipe.yml, abroll.yml, introoutro.yml, stitcher.yml, audioduck.yml, loudnorm.yml, autochapters.yml, quality-boost.yml, telegram-dispatch.yml
 docs/agent-task.yml headless agent trigger workflow — copy to .github/workflows/ (see .agent/QUICKSTART.md)
 requirements.txt    combined dependencies for all tools + the bot job runner + the agent runner
 ```
@@ -293,6 +295,43 @@ short seamlessly-looping clip + a long audio track.
   chat up to 2GB** via MTProto (Pyrogram, using the app API id/hash — no more
   20MB Bot-API limit). Anything larger falls back to a free, key-less direct
   download link (GoFile → transfer.sh → 0x0.st).
+
+## 11. QualityBoost 🚀
+
+```bash
+# Basic 2× upscale with sharpening (default):
+python qualityboost/main.py --input video.mp4 --output-dir ./output
+
+# 3× upscale + denoise + sharpen:
+python qualityboost/main.py --url "https://..." --scale-factor 3 --denoise --sharpen --output-dir ./output
+
+# Full pipeline: denoise + stabilize + 2× upscale + sharpen:
+python qualityboost/main.py --input shaky_video.mp4 --denoise --stabilize --sharpen --output-dir ./output
+
+# 4× upscale, no post-processing:
+python qualityboost/main.py --input video.mp4 --scale-factor 4 --no-sharpen --output-dir ./output
+```
+
+A **fast, FFmpeg-only video upscale + quality-fix pipeline** that runs entirely
+on GitHub Actions with zero VPS, zero ML models, zero GPU. Typical turnaround:
+**30-60 seconds** for a standard clip.
+
+- **Lanczos upscale** — 2×, 3×, or 4× resolution boost using `scale=flags=lanczos`
+  (the gold standard for non-ML resampling).
+- **hqdn3d denoise** — temporal + spatial noise reduction *before* upscale, so
+  noise isn't amplified by the scale operation.
+- **vidstab stabilize** — two-pass optical stabilization (analyse → transform)
+  for shaky handheld footage.
+- **Unsharp mask** — luma + chroma sharpening *after* upscale to restore edge
+  definition lost during resampling.
+- **High-quality encode** — `libx264 -crf 16 -preset slow` with AAC 320k audio
+  and `+faststart` for instant web playback.
+- Writes a `qualityboost_manifest.json` with source/output dimensions, processing
+  time, and all applied settings.
+
+**Telegram bot:** tap 🚀 QualityBoost in the menu, send your video, pick scale
+factor (2×/3×/4×), choose fixes (sharpen, denoise+sharpen, stabilize+sharpen,
+all, or none), and get the result back in ~30-60s.
 
 ### 2GB Telegram delivery (MTProto)
 
