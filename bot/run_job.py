@@ -411,6 +411,44 @@ def run_lofiloop(chat_id: str) -> None:
             send_video(chat_id, rendered, caption=caption)
 
 
+def run_qualityboost(chat_id: str) -> None:
+    source_value = _env("SOURCE_VALUE", required=True)
+    scale_factor = _env("SCALE_FACTOR", "2")
+    denoise = _env("DENOISE", "false").lower() == "true"
+    stabilize = _env("STABILIZE", "false").lower() == "true"
+    sharpen = _env("SHARPEN", "true").lower() == "true"
+    crf = _env("CRF", "16")
+    output_dir = "./job_output"
+
+    cmd = [
+        sys.executable, "qualityboost/main.py",
+        "--output-dir", output_dir,
+        "--scale-factor", scale_factor,
+        "--crf", crf,
+    ]
+
+    if source_value.startswith(("http://", "https://")):
+        cmd += ["--url", source_value]
+    else:
+        cmd += ["--input", source_value]
+
+    if denoise:
+        cmd.append("--denoise")
+    if stabilize:
+        cmd.append("--stabilize")
+    if sharpen:
+        cmd.append("--sharpen")
+    else:
+        cmd.append("--no-sharpen")
+
+    _run(cmd)
+    _send_output_videos(chat_id, output_dir, f"QualityBoost ({scale_factor}x)")
+
+    manifest_path = os.path.join(output_dir, "qualityboost_manifest.json")
+    if os.path.isfile(manifest_path):
+        send_document(chat_id, manifest_path, caption="📊 QualityBoost details")
+
+
 TOOL_RUNNERS = {
     "lofiloop": run_lofiloop,
     "lofi_video_render": run_lofiloop,
@@ -426,6 +464,7 @@ TOOL_RUNNERS = {
     "loudnorm": run_loudnorm,
     "autochapters": run_autochapters,
     "photostudio": run_photostudio,
+    "qualityboost": run_qualityboost,
 }
 
 

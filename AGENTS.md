@@ -5,7 +5,7 @@
 
 ## Project Overview
 
-A **10-tool video-processing CLI suite** with a **Telegram bot front-end** that
+An **11-tool video-processing CLI suite** with a **Telegram bot front-end** that
 requires zero VPS — Cloudflare Workers handle the bot interface, GitHub Actions
 run the heavy ffmpeg/whisper compute, and results are delivered straight back
 into the Telegram chat (up to 2 GB via MTProto).
@@ -24,6 +24,7 @@ into the Telegram chat (up to 2 GB via MTProto).
 | **AudioDuck** | Duck background music under a voiceover track |
 | **LoudNorm** | Normalize audio loudness to broadcast-standard LUFS |
 | **AutoChapters** | Generate YouTube chapter timestamps from transcripts |
+| **QualityBoost** | Fast FFmpeg-only video upscale (Lanczos 2×/3×/4×) + denoise/stabilize/sharpen |
 
 ## Tech Stack
 
@@ -54,6 +55,7 @@ into the Telegram chat (up to 2 GB via MTProto).
 ├── audioduck/              ← main
 ├── loudnorm/               ← main
 ├── autochapters/           ← main
+├── qualityboost/           ← main (FFmpeg-only video upscale pipeline)
 ├── lofiloop/               ← downloader, render, uploader, main
 ├── bot/                    ← telegram_notify, run_job, mtproto_transfer
 ├── cloudflare-worker/      ← worker.js, wrangler.toml
