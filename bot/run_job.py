@@ -9,7 +9,7 @@ requesting Telegram chat.
 
 Expected environment variables:
     CHAT_ID        - Telegram chat id to reply to (required)
-    TOOL           - "aspectshift" | "clipharvest" | "watermarkwipe" (required)
+    TOOL           - "aspectshift" | "clipharvest" | "watermarkwipe" | "stockimagefix" (required)
     SOURCE_TYPE    - "url" | "path"  (required)
     SOURCE_VALUE   - the URL or repo-relative path (required)
     MODE           - aspectshift: "blur"|"crop"; watermarkwipe: "crop"|"inpaint"
@@ -41,6 +41,8 @@ Expected environment variables:
     LOFI_NO_UPLOAD - lofiloop only, "true" to skip external upload fallback
     RESOLUTION     - photostudio only, "2k"|"4k"|"8k"|"16k" upscale target
     EFFECT         - photostudio only, color effect preset (e.g. "dslr")
+    SOURCE_VALUES_JSON - stockimagefix batch source list (JSON array of URLs/paths)
+    ADOBE_PNG_SPEC_PATH - stockimagefix cached Adobe PNG spec JSON path
 
 Options not present as env vars are read from the dispatch event payload
 (GITHUB_EVENT_PATH) automatically - see _load_payload(). This lets new
@@ -449,6 +451,56 @@ def run_qualityboost(chat_id: str) -> None:
         send_document(chat_id, manifest_path, caption="📊 QualityBoost details")
 
 
+def run_stockimagefix(chat_id: str) -> None:
+    source_type = _env("SOURCE_TYPE", required=True)
+    source_value = _env("SOURCE_VALUE", "")
+    source_values_json = _env("SOURCE_VALUES_JSON", "")
+    adobe_png_spec_path = _env("ADOBE_PNG_SPEC_PATH", os.path.join("stockimagefix", "adobe_png_requirements.json"))
+    output_dir = "./job_output"
+
+    sources: list[str] = []
+    if source_values_json:
+        try:
+            parsed = json.loads(source_values_json)
+            if isinstance(parsed, list):
+                sources.extend([str(v) for v in parsed if str(v).strip()])
+        except json.JSONDecodeError:
+            pass
+    if source_value:
+        sources.append(source_value)
+    sources = list(dict.fromkeys(sources))
+
+    if not sources:
+        raise RuntimeError("StockImageFix requires at least one image source.")
+
+    cmd = [sys.executable, "stockimagefix/main.py", "--output-dir", output_dir, "--png-spec", adobe_png_spec_path]
+    flag = "--url" if source_type == "url" else "--input"
+    for src in sources:
+        cmd += [flag, src]
+
+    _run(cmd)
+
+    manifest_path = os.path.join(output_dir, "stockimagefix_manifest.json")
+    delivery_path = ""
+    report_path = os.path.join(output_dir, "stockimagefix_report.txt")
+    if os.path.isfile(manifest_path):
+        try:
+            with open(manifest_path, encoding="utf-8") as fh:
+                manifest = json.load(fh)
+            delivery_path = str(manifest.get("delivery_path", ""))
+            report_path = str(manifest.get("report_path", report_path))
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    if delivery_path and os.path.isfile(delivery_path):
+        send_document(chat_id, delivery_path, caption="✅ StockImageFix upload-ready output")
+    else:
+        _send_output_documents(chat_id, output_dir, (".jpg", ".jpeg", ".png", ".eps", ".zip"), "StockImageFix output")
+
+    if os.path.isfile(report_path):
+        send_document(chat_id, report_path, caption="📊 StockImageFix issue report")
+
+
 TOOL_RUNNERS = {
     "lofiloop": run_lofiloop,
     "lofi_video_render": run_lofiloop,
@@ -465,6 +517,7 @@ TOOL_RUNNERS = {
     "autochapters": run_autochapters,
     "photostudio": run_photostudio,
     "qualityboost": run_qualityboost,
+    "stockimagefix": run_stockimagefix,
 }
 
 

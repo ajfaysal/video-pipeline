@@ -194,6 +194,7 @@ const TOOL_LABELS = {
   loudnorm: "📶 LoudNorm",
   autochapters: "📊 AutoChapters",
   photostudio: "📸 PhotoStudio",
+  stockimagefix: "🧰 StockImageFix",
 };
 
 // Photo effect presets - must match photostudio/effects.py PRESETS keys.
@@ -235,6 +236,7 @@ const TOOL_GROUPS = [
     items: [
       { tool: "watermarkwipe", description: "remove logos and watermarks" },
       { tool: "photostudio", description: "upscale photos up to 16K Ultra HD + pro color effects (DSLR, HDR, Portrait…)" },
+      { tool: "stockimagefix", description: "auto-fix Adobe Stock image submission issues end-to-end" },
       { tool: "qualityboost", description: "fast 2x Lanczos video upscale + denoise/sharpen (~30-60s)" },
     ],
   },
@@ -276,7 +278,8 @@ function menuKeyboard() {
     [{ text: TOOL_LABELS.audioduck, data: "tool:audioduck" },
      { text: TOOL_LABELS.loudnorm, data: "tool:loudnorm" }],
     [{ text: TOOL_LABELS.photostudio, data: "tool:photostudio" },
-     { text: TOOL_LABELS.autochapters, data: "tool:autochapters" }],
+     { text: TOOL_LABELS.stockimagefix, data: "tool:stockimagefix" }],
+    [{ text: TOOL_LABELS.autochapters, data: "tool:autochapters" }],
     [{ text: "🚀 QualityBoost — Fast Video Upscale", data: "tool:qualityboost" }],
     [{ text: "⋯ More", data: "overflow" }],
   ]);
@@ -347,6 +350,8 @@ function sourceInstructions(tool) {
       return "🎧 *LofiLoop* — Step 1 of 3\n\nSend your short *seamlessly-looping* clip (a ~10s .mp4 works best) as a file or a direct link.";
     case "photostudio":
       return "📸 *PhotoStudio* — Step 1 of 3\n\nSend me the photo you want to enhance.\n\n💡 For best quality send it *as a file/document* (not a compressed photo), or paste a direct image / Google Drive link.";
+    case "stockimagefix":
+      return "🧰 *StockImageFix* — fully automatic mode\n\nSend one image, or send multiple images as one album. I’ll auto-fix stock submission issues and return upload-ready output + report.";
     case "aspectshift":
       return "Send the video you want converted to vertical 9:16.";
     case "clipharvest":
@@ -506,6 +511,11 @@ async function continueAfterSource(env, chatId, state) {
 
 async function handleSourceMessage(env, chatId, state, message) {
   try {
+    if (state.tool === "stockimagefix") {
+      await handleStockImageFixSource(env, chatId, state, message);
+      return;
+    }
+
     const allowAudio = state.tool === "audioduck" && state.step === "collect_voiceover";
     const allowPhoto = state.tool === "photostudio";
     const sourceValue = await sourceFromMessage(env, message, allowAudio, allowPhoto);
@@ -520,6 +530,62 @@ async function handleSourceMessage(env, chatId, state, message) {
   } catch (e) {
     await sendMessage(env, chatId, `❌ ${e.message}`, withBackButton([]));
   }
+}
+
+async function handleStockImageFixSource(env, chatId, state, message) {
+  const sourceValue = await sourceFromMessage(env, message, false, true);
+  if (!sourceValue) {
+    await sendMessage(env, chatId, sourceInstructions("stockimagefix"), withBackButton([]));
+    return;
+  }
+
+  const albumId = message.media_group_id ? String(message.media_group_id) : "";
+  if (!albumId) {
+    state.source_type = "url";
+    state.source_value = sourceValue;
+    state.source_values = [sourceValue];
+    await dispatchAndFinish(env, chatId, state);
+    return;
+  }
+
+  const albumKey = `stockfix_album:${chatId}:${albumId}`;
+  const now = Date.now();
+  let album = { source_values: [], last_ts: now, dispatched: false };
+  try {
+    const raw = await env.BOT_STATE.get(albumKey);
+    if (raw) {
+      album = JSON.parse(raw);
+      if (!Array.isArray(album.source_values)) album.source_values = [];
+    }
+  } catch (_) {}
+
+  if (!album.source_values.includes(sourceValue)) {
+    album.source_values.push(sourceValue);
+  }
+  album.last_ts = now;
+  await env.BOT_STATE.put(albumKey, JSON.stringify(album), { expirationTtl: 900 });
+
+  await new Promise(resolve => setTimeout(resolve, 1700));
+
+  const latestRaw = await env.BOT_STATE.get(albumKey);
+  if (!latestRaw) {
+    return;
+  }
+  const latest = JSON.parse(latestRaw);
+  if (latest.dispatched) {
+    return;
+  }
+  if ((Date.now() - Number(latest.last_ts || 0)) < 1500) {
+    return;
+  }
+
+  latest.dispatched = true;
+  await env.BOT_STATE.put(albumKey, JSON.stringify(latest), { expirationTtl: 900 });
+
+  state.source_type = "url";
+  state.source_values = latest.source_values;
+  state.source_value = latest.source_values[0] || sourceValue;
+  await dispatchAndFinish(env, chatId, state);
 }
 
 async function handleMessage(env, message) {
@@ -875,6 +941,7 @@ async function dispatchAndFinish(env, chatId, state) {
       lofi_noise: state.lofi_noise || "1",
       resolution: state.resolution || "",
       effect: state.effect || "",
+      source_values_json: JSON.stringify(state.source_values || []),
     },
   });
 

@@ -44,6 +44,9 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
+      - name: Fetch Adobe PNG requirements cache
+        run: python setup/fetch_adobe_png_requirements.py && echo "ADOBE_PNG_SPEC_PATH=stockimagefix/adobe_png_requirements.json" >> "$GITHUB_ENV"
+
       - name: Run requested tool and reply on Telegram
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -76,6 +79,8 @@ jobs:
           LOFI_CRF: ${{ github.event.client_payload.options.lofi_crf }}
           LOFI_PRESET: ${{ github.event.client_payload.options.lofi_preset }}
           LOFI_NOISE: ${{ github.event.client_payload.options.lofi_noise }}
+          SOURCE_VALUES_JSON: ${{ github.event.client_payload.options.source_values_json }}
+          ADOBE_PNG_SPEC_PATH: ${{ env.ADOBE_PNG_SPEC_PATH }}
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
         run: python bot/run_job.py

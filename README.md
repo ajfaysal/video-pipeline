@@ -14,6 +14,7 @@ with zero VPS required (Cloudflare Workers + GitHub Actions).
 - **LoudNorm** - normalizes audio loudness to broadcast-standard -14 LUFS with two-pass ffmpeg loudnorm
 - **AutoChapters** - generates YouTube chapter timestamps from transcripts and embeds chapter metadata
 - **QualityBoost** 🚀 - fast FFmpeg-only video upscale (2×/3×/4× Lanczos) + optional denoise, stabilize, and sharpen — ~30-60s turnaround, no VPS or ML models needed
+- **StockImageFix** 🧰 - fully automatic Adobe Stock image prep (stray cleanup, auto-upscale, format/profile normalization, metadata stripping, batch zip + report)
 
 ## Requirements
 
@@ -137,7 +138,7 @@ python audioduck/main.py --video video.mp4 --voiceover narration.mp3 --output-di
 ## Running via GitHub Actions (no local setup needed)
 
 Each tool has a `workflow_dispatch`-triggered workflow under `.github/workflows/`:
-`aspectshift.yml`, `clipharvest.yml`, `watermarkwipe.yml`, `abroll.yml`, `introoutro.yml`, `stitcher.yml`, `audioduck.yml`, `loudnorm.yml`, `autochapters.yml`, `quality-boost.yml`. Trigger them from the Actions tab with the requested repo-relative path(s) or URL(s), and download the result from the run's Artifacts.
+`aspectshift.yml`, `clipharvest.yml`, `watermarkwipe.yml`, `abroll.yml`, `introoutro.yml`, `stitcher.yml`, `audioduck.yml`, `loudnorm.yml`, `autochapters.yml`, `quality-boost.yml`. Telegram-dispatched jobs run through `telegram-dispatch.yml`, which now also refreshes cached Adobe PNG technical requirements used by StockImageFix at runtime.
 
 ---
 
@@ -145,7 +146,7 @@ Each tool has a `workflow_dispatch`-triggered workflow under `.github/workflows/
 
 Architecture: **Cloudflare Worker** (shows a menu, then collects your tool/options choice via inline buttons) → triggers **GitHub Actions** (`telegram-dispatch.yml`, does the actual ffmpeg/whisper work) → Actions sends the finished video/thumbnail straight back to your chat. Nothing needs to run 24/7 on a server you manage.
 
-The Worker exposes LofiLoop, AspectShift, ClipHarvest, WatermarkWipe, ABRoll, IntroOutro, Stitcher, AudioDuck, LoudNorm, AutoChapters, and QualityBoost as bot options, with a modern grouped menu and a `⋯ More` (3-dot) overflow for About/Help/Large-files. LofiLoop collects the short loop clip, then a public Google Drive audio link, then the target hours. ABRoll and Stitcher ask for additional clips, AudioDuck asks for the narration track, and LoudNorm/AutoChapters dispatch as soon as the source video is collected.
+The Worker exposes LofiLoop, AspectShift, ClipHarvest, WatermarkWipe, ABRoll, IntroOutro, Stitcher, AudioDuck, LoudNorm, AutoChapters, QualityBoost, and StockImageFix as bot options, with a modern grouped menu and a `⋯ More` (3-dot) overflow for About/Help/Large-files. LofiLoop collects the short loop clip, then a public Google Drive audio link, then the target hours. ABRoll and Stitcher ask for additional clips, AudioDuck asks for the narration track, LoudNorm/AutoChapters dispatch as soon as the source video is collected, and StockImageFix runs fully automatically after the image (or album) arrives.
 
 ### Two ways to serve the menu UI (no manual Cloudflare logins)
 
@@ -332,6 +333,27 @@ on GitHub Actions with zero VPS, zero ML models, zero GPU. Typical turnaround:
 **Telegram bot:** tap 🚀 QualityBoost in the menu, send your video, pick scale
 factor (2×/3×/4×), choose fixes (sharpen, denoise+sharpen, stabilize+sharpen,
 all, or none), and get the result back in ~30-60s.
+
+## 12. StockImageFix 🧰
+
+```bash
+# Single image:
+python stockimagefix/main.py --input artwork.png --output-dir ./output
+
+# Batch:
+python stockimagefix/main.py --input img1.png --input img2.jpg --output-dir ./output
+python stockimagefix/main.py --url "https://.../art.png" --url "https://.../art2.jpg" --output-dir ./output
+```
+
+StockImageFix is a **fully automatic** Adobe Stock prep pipeline:
+- auto-detects/removes disconnected stray blobs (safe connected-component rules)
+- auto-upscales when below minimum resolution (Real-ESRGAN when available, Lanczos fallback)
+- normalizes final format/profile (JPEG sRGB for opaque raster, PNG for transparent assets)
+- strips metadata/EXIF tags
+- emits `stockimagefix_report.txt` plus a single delivery artifact (`.zip` for multi-file batches)
+- attempts EPS fallback export (Inkscape) for vector-like images and warns that true vector redraw is still preferred
+
+**Telegram bot:** tap 🧰 StockImageFix, send one image or a Telegram album, then wait — no manual confirmation gates. The bot returns upload-ready output plus the issue report.
 
 ### 2GB Telegram delivery (MTProto)
 
