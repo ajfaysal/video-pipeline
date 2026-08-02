@@ -35,6 +35,7 @@ class ImageResult:
     output_path: str
     report_lines: list[str]
     eps_path: str | None = None
+    preview_path: str | None = None
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -218,6 +219,19 @@ def _ensure_min_resolution(
     return upscaled
 
 
+def _cap_max_resolution(image: Image.Image, max_pixels: int, report: list[str]) -> Image.Image:
+    """Downscale (Lanczos) when the image exceeds Adobe's maximum megapixel cap."""
+    w, h = image.size
+    if max_pixels <= 0 or (w * h) <= max_pixels:
+        return image
+    scale = math.sqrt(max_pixels / float(w * h))
+    target_w = max(1, int(w * scale))
+    target_h = max(1, int(h * scale))
+    resized = image.resize((target_w, target_h), Image.Resampling.LANCZOS)
+    report.append(f"- Resolution: downscaled {w}x{h} -> {target_w}x{target_h} to satisfy the {max_pixels:,} px maximum.")
+    return resized
+
+
 def _to_srgb(image: Image.Image) -> Image.Image:
     if image.mode not in ("RGB", "RGBA"):
         image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
@@ -267,6 +281,38 @@ def _save_png_safely(image: Image.Image, output_path: str, png_spec: dict, repor
             report.append(f"- Warning: PNG size exceeds cached max ({size_mb:.2f} MB > {max_mb} MB).")
 
 
+def _build_before_after_preview(
+    before: Image.Image,
+    after: Image.Image,
+    output_dir: str,
+    base: str,
+    report: list[str],
+) -> str | None:
+    """Render a side-by-side before/after comparison JPEG for the Telegram reply."""
+    try:
+        panel_w = 640
+        panels = []
+        for label_img in (before, after):
+            img = label_img.convert("RGB")
+            scale = panel_w / max(1, img.width)
+            panel_h = max(1, int(round(img.height * scale)))
+            panels.append(img.resize((panel_w, panel_h), Image.Resampling.LANCZOS))
+
+        height = max(p.height for p in panels)
+        divider = 4
+        canvas = Image.new("RGB", (panel_w * 2 + divider, height), (32, 32, 32))
+        canvas.paste(panels[0], (0, (height - panels[0].height) // 2))
+        canvas.paste(panels[1], (panel_w + divider, (height - panels[1].height) // 2))
+
+        preview_path = os.path.join(output_dir, f"{base}_before_after.jpg")
+        canvas.save(preview_path, format="JPEG", quality=85, optimize=True)
+        report.append("- Preview: generated side-by-side before/after comparison.")
+        return preview_path
+    except Exception as exc:
+        report.append(f"- Preview: before/after render failed ({exc}); continuing without it.")
+        return None
+
+
 def _maybe_export_eps(output_png_path: str, report: list[str]) -> str | None:
     inkscape = shutil.which("inkscape")
     if not inkscape:
@@ -297,6 +343,7 @@ def process_one_image(source_path: str, output_dir: str, png_spec: dict) -> Imag
     report = [f"Source: {os.path.basename(source_path)}"]
 
     image = Image.open(source_path).convert("RGBA")
+    original = image.copy()
     rgba = np.array(image)
 
     fixed_rgba = _remove_stray_elements(rgba, report)
@@ -305,15 +352,18 @@ def process_one_image(source_path: str, output_dir: str, png_spec: dict) -> Imag
     has_transparency = np.any(fixed_rgba[:, :, 3] < 250)
     is_vector_like = _looks_vector_style(fixed_rgba)
 
+    spec_parsed = png_spec.get("parsed") or {}
     if has_transparency:
-        min_pixels = int((png_spec.get("parsed") or {}).get("min_pixels", 4_000_000))
-        min_width = int((png_spec.get("parsed") or {}).get("min_width", 1600))
-        min_height = int((png_spec.get("parsed") or {}).get("min_height", 2400))
+        min_pixels = int(spec_parsed.get("min_pixels") or 4_000_000)
+        min_width = int(spec_parsed.get("min_width") or 0)
+        min_height = int(spec_parsed.get("min_height") or 0)
         fixed_img = _ensure_min_resolution(fixed_img, min_pixels=min_pixels, min_width=min_width, min_height=min_height, report=report)
+        fixed_img = _cap_max_resolution(fixed_img, int(spec_parsed.get("max_pixels") or 100_000_000), report)
         output_path = os.path.join(output_dir, f"{base}_stock_fixed.png")
         _save_png_safely(fixed_img, output_path, png_spec, report)
     else:
-        fixed_img = _ensure_min_resolution(fixed_img, min_pixels=4_000_000, min_width=1600, min_height=2400, report=report)
+        fixed_img = _ensure_min_resolution(fixed_img, min_pixels=4_000_000, min_width=0, min_height=0, report=report)
+        fixed_img = _cap_max_resolution(fixed_img, 100_000_000, report)
         output_path = os.path.join(output_dir, f"{base}_stock_fixed.jpg")
         _save_jpeg_safely(fixed_img, output_path, max_size_mb=45, report=report)
 
@@ -328,7 +378,15 @@ def process_one_image(source_path: str, output_dir: str, png_spec: dict) -> Imag
             fixed_img.save(png_for_eps, format="PNG", optimize=True, compress_level=9)
         eps_path = _maybe_export_eps(png_for_eps, report)
 
-    return ImageResult(source_name=os.path.basename(source_path), output_path=output_path, report_lines=report, eps_path=eps_path)
+    preview_path = _build_before_after_preview(original, fixed_img, output_dir, base, report)
+
+    return ImageResult(
+        source_name=os.path.basename(source_path),
+        output_path=output_path,
+        report_lines=report,
+        eps_path=eps_path,
+        preview_path=preview_path,
+    )
 
 
 def write_report(results: list[ImageResult], output_dir: str) -> str:
@@ -391,6 +449,7 @@ def main() -> int:
             "report_path": report_path,
             "outputs": [r.output_path for r in results],
             "eps_outputs": [r.eps_path for r in results if r.eps_path],
+            "previews": [r.preview_path for r in results if r.preview_path],
         }
         manifest_path = os.path.join(args.output_dir, "stockimagefix_manifest.json")
         with open(manifest_path, "w", encoding="utf-8") as fh:

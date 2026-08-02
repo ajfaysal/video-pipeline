@@ -483,14 +483,22 @@ def run_stockimagefix(chat_id: str) -> None:
     manifest_path = os.path.join(output_dir, "stockimagefix_manifest.json")
     delivery_path = ""
     report_path = os.path.join(output_dir, "stockimagefix_report.txt")
+    preview_paths: list[str] = []
     if os.path.isfile(manifest_path):
         try:
             with open(manifest_path, encoding="utf-8") as fh:
                 manifest = json.load(fh)
             delivery_path = str(manifest.get("delivery_path", ""))
             report_path = str(manifest.get("report_path", report_path))
+            previews = manifest.get("previews") or []
+            if isinstance(previews, list):
+                preview_paths = [str(p) for p in previews if p]
         except (OSError, json.JSONDecodeError):
             pass
+
+    for preview_path in preview_paths:
+        if os.path.isfile(preview_path):
+            send_photo(chat_id, preview_path, caption="🔍 Before/after preview")
 
     if delivery_path and os.path.isfile(delivery_path):
         send_document(chat_id, delivery_path, caption="✅ StockImageFix upload-ready output")
